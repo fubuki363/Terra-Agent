@@ -70,6 +70,8 @@ internal static class Program
             RunLocalStateTests(temporaryDirectory);
             await RunEmptyResponseRecoveryTest();
             await RunAgentToolLoopTest();
+            await RunUnlimitedAgentToolLoopTests();
+            await RunUnlimitedAgentCancellationTests();
             await RunAgentLengthRecoveryTest();
             await RunTransportAndNavigationTests();
             if (Array.Exists(args, argument => argument == "--offline")) return 0;
@@ -651,6 +653,92 @@ internal static class Program
         Console.WriteLine("OK agent-loop tools=on-demand reasoning=replayed events=visible");
     }
 
+    private static async Task RunUnlimitedAgentToolLoopTests()
+    {
+        foreach (bool enableThinking in new[] { true, false })
+        {
+            MultiStepToolHandler handler = new() { ToolRounds = 10, CallsPerRound = 8, ThinkingEnabled = enableThinking };
+            using DeepSeekClient client = new(handler);
+            AgentToolRegistry tools = new();
+            int executions = 0;
+            tools.Register(new AgentToolDefinition
+            {
+                Name = "test_tool",
+                DisplayName = "连续调用测试工具",
+                Description = "测试长任务和完整工具批次。",
+                Parameters = new { type = "object" },
+                ExecuteAsync = (arguments, _) =>
+                {
+                    int expectedRound = executions / handler.CallsPerRound + 1;
+                    int expectedIndex = executions % handler.CallsPerRound;
+                    if (arguments.GetProperty("round").GetInt32() != expectedRound
+                        || arguments.GetProperty("index").GetInt32() != expectedIndex)
+                        throw new InvalidOperationException("工具批次执行顺序或参数不完整。");
+                    executions++;
+                    return Task.FromResult(new AgentToolResult(false, "测试结果", "已完成"));
+                }
+            });
+            List<AgentToolEvent> events = new();
+            List<AgentReasoningEvent> reasoningEvents = new();
+            int usageEvents = 0;
+            client.UsageReported += _ => usageEvents++;
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            string answer = await client.AskAgentWithHistoryAsync(
+                "sk-test-only-12345678901234567890", "连续执行多轮工具", "",
+                Array.Empty<ConversationTurn>(), tools, 0, enableThinking, timeout.Token,
+                events.Add, reasoningEvents.Add);
+            int expectedCalls = handler.ToolRounds * handler.CallsPerRound;
+            if (answer != "不限次数工具调用完成" || executions != expectedCalls
+                || handler.CallCount != handler.ToolRounds + 1 || usageEvents != handler.CallCount
+                || events.Count != expectedCalls * 2 || events.Any(value => value.IsError)
+                || events.Where(value => value.Completed).Count() != expectedCalls
+                || reasoningEvents.Count != handler.CallCount
+                || !reasoningEvents.Select(value => value.Step).SequenceEqual(Enumerable.Range(1, handler.CallCount))
+                || events.Where(value => value.Completed).Any(value => value.Step < 1 || value.Step > handler.ToolRounds))
+                throw new InvalidOperationException($"不限次数 Agent 回归失败：thinking={enableThinking}, calls={executions}, steps={handler.CallCount}。");
+            Console.WriteLine($"OK agent-unlimited thinking={enableThinking} toolCalls={executions} batch={handler.CallsPerRound} modelSteps={handler.CallCount} results=paired usage=counted");
+        }
+    }
+
+    private static async Task RunUnlimitedAgentCancellationTests()
+    {
+        // Cancel once between rounds and once inside a batch, beyond the former six-call cap.
+        foreach (int cancelAfter in new[] { 16, 20 })
+        {
+            MultiStepToolHandler handler = new() { ToolRounds = 100, CallsPerRound = 8 };
+            using DeepSeekClient client = new(handler);
+            using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(10));
+            AgentToolRegistry tools = new();
+            int executions = 0;
+            tools.Register(new AgentToolDefinition
+            {
+                Name = "test_tool",
+                DisplayName = "取消测试工具",
+                Description = "测试工具忽略取消令牌时，调度仍能停止。",
+                Parameters = new { type = "object" },
+                ExecuteAsync = (_, _) =>
+                {
+                    if (++executions == cancelAfter) cancellation.Cancel();
+                    return Task.FromResult(new AgentToolResult(false, "测试结果", "已完成"));
+                }
+            });
+            try
+            {
+                await client.AskAgentWithHistoryAsync(
+                    "sk-test-only-12345678901234567890", "连续调用直到取消", "",
+                    Array.Empty<ConversationTurn>(), tools, 0, true, cancellation.Token);
+                throw new InvalidOperationException("取消后 Agent 仍然返回了最终回答。");
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                int expectedRounds = (cancelAfter + handler.CallsPerRound - 1) / handler.CallsPerRound;
+                if (executions != cancelAfter || handler.CallCount != expectedRounds)
+                    throw new InvalidOperationException($"取消后仍然执行了工具或请求：calls={executions}, steps={handler.CallCount}。");
+            }
+            Console.WriteLine($"OK agent-unlimited-cancel afterCalls={executions} apiCalls={handler.CallCount} pending=stopped");
+        }
+    }
+
     private static async Task RunAgentLengthRecoveryTest()
     {
         AgentLengthRecoveryHandler handler = new();
@@ -848,6 +936,85 @@ internal static class Program
             string json = _callCount == 1
                 ? "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":null,\"reasoning_content\":\"需要读取装备\",\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read_game_state\",\"arguments\":\"{\\\"categories\\\":[\\\"equipment\\\"]}\"}}]}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}"
                 : "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"装备读取完成\",\"reasoning_content\":\"已取得工具结果\",\"tool_calls\":[]}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+        }
+    }
+
+    private sealed class MultiStepToolHandler : HttpMessageHandler
+    {
+        public int ToolRounds { get; init; }
+        public int CallsPerRound { get; init; }
+        public bool ThinkingEnabled { get; init; } = true;
+        public int CallCount { get; private set; }
+        private readonly List<string> _issuedCallIds = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            using JsonDocument document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            JsonElement payload = document.RootElement;
+            if (payload.TryGetProperty("max_tokens", out _)
+                || payload.GetProperty("thinking").GetProperty("type").GetString() != (ThinkingEnabled ? "enabled" : "disabled")
+                || !payload.TryGetProperty("tools", out JsonElement schemas)
+                || !schemas.EnumerateArray().Any(tool => tool.GetProperty("function").GetProperty("name").GetString() == "test_tool"))
+                throw new InvalidOperationException("长任务丢失了工具声明、思考设置或取消了不限输出设置。");
+            bool hasToolChoice = payload.TryGetProperty("tool_choice", out JsonElement choice);
+            if (ThinkingEnabled ? hasToolChoice : !hasToolChoice || choice.GetString() != "auto")
+                throw new InvalidOperationException("Agent 强制终止了工具规划。");
+
+            List<string> declaredIds = new();
+            List<string> resultIds = new();
+            foreach (JsonElement message in payload.GetProperty("messages").EnumerateArray())
+            {
+                if (message.TryGetProperty("tool_calls", out JsonElement calls))
+                    declaredIds.AddRange(calls.EnumerateArray().Select(call => call.GetProperty("id").GetString()!));
+                if (message.GetProperty("role").GetString() == "tool")
+                {
+                    resultIds.Add(message.GetProperty("tool_call_id").GetString()!);
+                    using JsonDocument result = JsonDocument.Parse(message.GetProperty("content").GetString()!);
+                    if (!result.RootElement.GetProperty("ok").GetBoolean())
+                        throw new InvalidOperationException("长任务测试工具执行失败。");
+                }
+            }
+            if (!declaredIds.SequenceEqual(_issuedCallIds) || !resultIds.SequenceEqual(_issuedCallIds))
+                throw new InvalidOperationException("Agent 丢弃了部分工具调用或没有完整回传工具结果。");
+
+            bool finished = CallCount > ToolRounds;
+            List<object> toolCalls = new();
+            if (!finished)
+            {
+                for (int index = 0; index < CallsPerRound; index++)
+                {
+                    string id = $"call-{CallCount}-{index}";
+                    _issuedCallIds.Add(id);
+                    toolCalls.Add(new
+                    {
+                        id,
+                        type = "function",
+                        function = new { name = "test_tool", arguments = JsonSerializer.Serialize(new { round = CallCount, index }) }
+                    });
+                }
+            }
+            string json = JsonSerializer.Serialize(new
+            {
+                choices = new[]
+                {
+                    new
+                    {
+                        finish_reason = finished ? "stop" : "tool_calls",
+                        message = new
+                        {
+                            content = finished ? "不限次数工具调用完成" : (string?)null,
+                            reasoning_content = $"规划第 {CallCount} 步",
+                            tool_calls = toolCalls
+                        }
+                    }
+                },
+                usage = new { prompt_tokens = 1, completion_tokens = 1, total_tokens = 2 }
+            });
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")

@@ -151,11 +151,10 @@ internal sealed class DeepSeekClient : IDisposable
         }
         messages.Add(new { role = "user", content = BuildCurrentContent(question, wikiContext, "", imageDataUrl) });
 
-        const int maximumSteps = 4;
-        int totalCalls = 0;
-        for (int step = 0; step < maximumSteps; step++)
+        // Continue until the model answers or the user cancels; do not truncate tool batches.
+        for (int step = 0; ; step++)
         {
-            bool finalStep = step == maximumSteps - 1;
+            token.ThrowIfCancellationRequested();
             DeepSeekResponse response = await SendOnceAsync(
                 apiKey,
                 messages,
@@ -163,7 +162,8 @@ internal sealed class DeepSeekClient : IDisposable
                 enableThinking,
                 token,
                 tools.Count > 0 ? tools.ApiSchemas : null,
-                finalStep ? "none" : "auto");
+                "auto");
+            token.ThrowIfCancellationRequested();
             DeepSeekMessage assistant = response.Choices.FirstOrDefault()?.Message ?? new();
             string firstReason = GetFinishReason(response);
             int firstReasoningLength = GetReasoningLength(response);
@@ -181,7 +181,8 @@ internal sealed class DeepSeekClient : IDisposable
                     enableThinking,
                     token,
                     tools.Count > 0 ? tools.ApiSchemas : null,
-                    finalStep ? "none" : "auto");
+                    "auto");
+                token.ThrowIfCancellationRequested();
                 response = retry;
                 assistant = response.Choices.FirstOrDefault()?.Message ?? new();
                 PublishReasoning(reasoningProgress, step + 1, 2, retry);
@@ -201,16 +202,12 @@ internal sealed class DeepSeekClient : IDisposable
                 throw new InvalidOperationException("Agent 没有返回回答或工具调用。结束原因：" + GetFinishReason(response));
             }
 
-            List<DeepSeekToolCall> calls = assistant.ToolCalls.Take(4).ToList();
+            List<DeepSeekToolCall> calls = assistant.ToolCalls.ToList();
             for (int i = 0; i < calls.Count; i++)
             {
                 if (string.IsNullOrWhiteSpace(calls[i].Id))
                     calls[i].Id = $"local-{step}-{i}-{Guid.NewGuid():N}";
             }
-            totalCalls += calls.Count;
-            if (totalCalls > 6)
-                throw new InvalidOperationException("Agent 工具调用次数超过安全上限。");
-
             messages.Add(new
             {
                 role = "assistant",
@@ -226,6 +223,7 @@ internal sealed class DeepSeekClient : IDisposable
 
             foreach (DeepSeekToolCall call in calls)
             {
+                token.ThrowIfCancellationRequested();
                 string displayName = tools.GetDisplayName(call.Function.Name);
                 toolProgress?.Invoke(new(
                     call.Function.Name,
@@ -262,8 +260,6 @@ internal sealed class DeepSeekClient : IDisposable
                     step + 1));
             }
         }
-
-        throw new InvalidOperationException("Agent 达到最大步骤数但没有生成最终回答。");
     }
 
     private async Task<string> SendAsync(
