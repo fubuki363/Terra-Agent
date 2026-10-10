@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <PlatformTarget>x86</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\Services\Models.cs" Link="Services\Models.cs" />
+    <Compile Include="..\..\Services\ClientIdentity.cs" Link="Services\ClientIdentity.cs" />
+    <Compile Include="..\..\Services\AgentTools.cs" Link="Services\AgentTools.cs" />
+    <Compile Include="..\..\Services\ApiKeyProvider.cs" Link="Services\ApiKeyProvider.cs" />
+    <Compile Include="..\..\Services\WikiCache.cs" Link="Services\WikiCache.cs" />
+    <Compile Include="..\..\Services\TerrariaWikiClient.cs" Link="Services\TerrariaWikiClient.cs" />
+    <Compile Include="..\..\Services\CommunitySearchClient.cs" Link="Services\CommunitySearchClient.cs" />
+    <Compile Include="..\..\Services\DeepSeekClient.cs" Link="Services\DeepSeekClient.cs" />
+    <Compile Include="..\..\Services\WikiResearchService.cs" Link="Services\WikiResearchService.cs" />
+    <Compile Include="..\..\Services\ConversationStore.cs" Link="Services\ConversationStore.cs" />
+    <Compile Include="..\..\Services\UsageTracker.cs" Link="Services\UsageTracker.cs" />
+    <Compile Include="..\..\Overlay\TerrariaSaveContextReader.cs" Link="Overlay\TerrariaSaveContextReader.cs" />
+    <Compile Include="..\..\Overlay\TerrariaItemNameCatalog.cs" Link="Overlay\TerrariaItemNameCatalog.cs" />
+    <Compile Include="..\..\Overlay\TerrariaPrefixCatalog.cs" Link="Overlay\TerrariaPrefixCatalog.cs" />
+    <Compile Include="..\..\Overlay\QuickReferenceCatalog.cs" Link="Overlay\QuickReferenceCatalog.cs" />
+    <Compile Include="..\..\Overlay\WikiEncyclopediaService.cs" Link="Overlay\WikiEncyclopediaService.cs" />
+    <Compile Include="..\..\Overlay\GameContextSelection.cs" Link="Overlay\GameContextSelection.cs" />
+    <Compile Include="..\..\Overlay\GameMemoryAgentSkill.cs" Link="Overlay\GameMemoryAgentSkill.cs" />
+    <Compile Include="..\..\Overlay\WorldLocatorAgentSkills.cs" Link="Overlay\WorldLocatorAgentSkills.cs" />
+    <Compile Include="..\..\Overlay\TerrariaWorldLocator.cs" Link="Overlay\TerrariaWorldLocator.cs" />
+    <Compile Include="..\..\Overlay\TerrariaWorldObjectLocator.cs" Link="Overlay\TerrariaWorldObjectLocator.cs" />
+    <Compile Include="..\..\Overlay\WorldObjectCatalog.cs" Link="Overlay\WorldObjectCatalog.cs" />
+    <Compile Include="..\..\Overlay\RuntimePlacementCatalog.cs" Link="Overlay\RuntimePlacementCatalog.cs" />
+    <Compile Include="..\..\Overlay\TerrariaReadCoordinator.cs" Link="Overlay\TerrariaReadCoordinator.cs" />
+    <Compile Include="..\..\Overlay\NavigationState.cs" Link="Overlay\NavigationState.cs" />
+    <Compile Include="..\..\Overlay\OverlaySettingsStore.cs" Link="Overlay\OverlaySettingsStore.cs" />
+    <Compile Include="..\..\Overlay\TerrariaManagedMemoryContextReader.cs" Link="Overlay\TerrariaManagedMemoryContextReader.cs" />
+    <Compile Include="..\..\Overlay\TerrariaMemoryContextReader.cs" Link="Overlay\TerrariaMemoryContextReader.cs" />
+    <Compile Include="..\..\Overlay\NativeMethods.cs" Link="Overlay\NativeMethods.cs" />
+  </ItemGroup>
+</Project>

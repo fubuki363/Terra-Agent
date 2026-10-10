@@ -1,0 +1,24 @@
+key
+key.*
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+bin/
+obj/
+.vs/
+*.user
+*.tmod
+dist/
+
+# Local assistant data (normally stored outside this repository).
+history-v*.json
+settings-v*.json
+usage-v*.json
+window-v*.json
+errors.log*
+wiki-cache*/
+encyclopedia-v*/
+*.dmp

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>TerraWikiOverlay</AssemblyName>
+    <RootNamespace>TerraWikiOverlay</RootNamespace>
+    <Version>1.1.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Services\Models.cs" Link="Shared\Models.cs" />
+    <Compile Include="..\Services\ClientIdentity.cs" Link="Shared\ClientIdentity.cs" />
+    <Compile Include="..\Services\AgentTools.cs" Link="Shared\AgentTools.cs" />
+    <Compile Include="..\Services\ApiKeyProvider.cs" Link="Shared\ApiKeyProvider.cs" />
+    <Compile Include="..\Services\WikiCache.cs" Link="Shared\WikiCache.cs" />
+    <Compile Include="..\Services\TerrariaWikiClient.cs" Link="Shared\TerrariaWikiClient.cs" />
+    <Compile Include="..\Services\CommunitySearchClient.cs" Link="Shared\CommunitySearchClient.cs" />
+    <Compile Include="..\Services\DeepSeekClient.cs" Link="Shared\DeepSeekClient.cs" />
+    <Compile Include="..\Services\WikiResearchService.cs" Link="Shared\WikiResearchService.cs" />
+    <Compile Include="..\Services\ConversationStore.cs" Link="Shared\ConversationStore.cs" />
+    <Compile Include="..\Services\UsageTracker.cs" Link="Shared\UsageTracker.cs" />
+  </ItemGroup>
+</Project>
