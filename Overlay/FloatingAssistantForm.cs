@@ -16,7 +16,8 @@ internal sealed class FloatingAssistantForm : Form
     private const int ExpandedWidth = 1180;
     private const int ExpandedHeight = 820;
 
-    private readonly OverlayAskService _assistant = new();
+    private readonly OverlayAskService _assistant;
+    private readonly FloatingBallForm _ball;
     private readonly Panel _expandedPanel = new();
     private readonly Panel _contentHost = new();
     private readonly ConversationTimeline _conversation = new();
@@ -51,7 +52,6 @@ internal sealed class FloatingAssistantForm : Form
 
     private bool _collapsed;
     private bool _busy;
-    private bool _hoveringBall;
     private bool _loadingSessions;
     private bool _dragging;
     private bool _dragMoved;
@@ -60,10 +60,12 @@ internal sealed class FloatingAssistantForm : Form
     private float _animationPhase;
     private DateTime _lastNavigationRefreshUtc;
 
-    public FloatingAssistantForm()
+    public FloatingAssistantForm(string? dataDirectory = null)
     {
+        _assistant = new OverlayAskService(dataDirectory);
         _encyclopedia = new FullEncyclopediaPanel(_assistant.DataDirectory);
         _worldSearch = new WorldSearchPanel(_assistant);
+        _ball = new FloatingBallForm(BallSize, DrawBall, Expand);
         Text = "Terra Agent";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = true;
@@ -108,11 +110,9 @@ internal sealed class FloatingAssistantForm : Form
                 _agentActivity.ForeColor = Color.FromArgb(126, 218, 190);
             }
             if (_collapsed)
-                Invalidate();
+                _ball.Invalidate();
         };
         _animationTimer.Start();
-        MouseEnter += (_, _) => { _hoveringBall = true; Invalidate(); };
-        MouseLeave += (_, _) => { _hoveringBall = false; Invalidate(); };
 
         Shown += (_, _) =>
         {
@@ -128,6 +128,7 @@ internal sealed class FloatingAssistantForm : Form
             _expandedBounds = Bounds;
             RefreshSessions();
             RefreshStatus();
+            _ = _ball.Handle; // Prepare the small window before the first collapse.
             Activate();
             BringToFront();
         };
@@ -164,6 +165,11 @@ internal sealed class FloatingAssistantForm : Form
             if (_collapsed) Expand(); else Collapse();
             return;
         }
+        if (message.Msg == 0x0112 && (message.WParam.ToInt64() & 0xFFF0) == 0xF020)
+        {
+            Collapse(); // Taskbar/system minimize uses the same immediate ball transition.
+            return;
+        }
         if (message.Msg == 0x0084 && !_collapsed) // WM_NCHITTEST: resize the frameless panel.
         {
             Point point = PointToClient(new Point((short)(message.LParam.ToInt64() & 0xFFFF),
@@ -178,42 +184,39 @@ internal sealed class FloatingAssistantForm : Form
         base.WndProc(ref message);
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    private void DrawBall(Graphics graphics, Rectangle bounds)
     {
-        base.OnPaint(e);
-        if (!_collapsed)
-            return;
-
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        int width = bounds.Width, height = bounds.Height;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
         float pulse = (MathF.Sin(_animationPhase) + 1f) / 2f;
         NavigationSnapshot navigation = _assistant.Navigation;
         bool navigating = navigation.Active;
         bool arrived = navigating && navigation.DistanceTiles <= 8f;
         Color navigationColor = arrived ? Color.FromArgb(82, 232, 142) : Color.FromArgb(255, 190, 62);
         int inset = 7 - (int)MathF.Round(pulse * 3f);
-        int glowAlpha = 42 + (int)(pulse * 38f) + (_hoveringBall ? 30 : 0);
+        int glowAlpha = 42 + (int)(pulse * 38f) + (_ball.Hovered ? 30 : 0);
 
         using Pen outerGlow = new(Color.FromArgb(Math.Min(170, glowAlpha + (navigating ? 30 : 0)), navigating ? navigationColor : Accent), 4f + pulse * 3f);
-        e.Graphics.DrawEllipse(outerGlow, inset, inset, Width - inset * 2 - 1, Height - inset * 2 - 1);
-        Rectangle orb = new(10, 10, Width - 21, Height - 21);
+        graphics.DrawEllipse(outerGlow, inset, inset, width - inset * 2 - 1, height - inset * 2 - 1);
+        Rectangle orb = new(10, 10, width - 21, height - 21);
         using LinearGradientBrush fill = new(
             orb,
             navigating ? Color.FromArgb(255, 215, 92) : Color.FromArgb(46, 224, 255),
             navigating ? Color.FromArgb(239, 106, 68) : AccentPurple,
             35f + pulse * 35f);
-        e.Graphics.FillEllipse(fill, orb);
+        graphics.FillEllipse(fill, orb);
         using Pen ring = new(Color.FromArgb(225, 240, 255), 2f);
-        e.Graphics.DrawEllipse(ring, orb);
+        graphics.DrawEllipse(ring, orb);
 
         if (navigating && !_busy)
         {
-            DrawNavigationArrow(e.Graphics, navigation, pulse, arrived);
+            DrawNavigationArrow(graphics, navigation, pulse, arrived);
             string distanceText = arrived ? "到达" : navigation.DistanceTiles >= 1000
                 ? $"{navigation.DistanceTiles / 1000f:0.#}k格"
                 : $"{navigation.DistanceTiles:0}格";
-            Rectangle distanceBounds = new(14, 70, Width - 28, 20);
+            Rectangle distanceBounds = new(14, 70, width - 28, 20);
             using Font distanceFont = new("Microsoft YaHei UI", 8.2f, FontStyle.Bold);
-            TextRenderer.DrawText(e.Graphics, distanceText, distanceFont, distanceBounds, Color.White,
+            TextRenderer.DrawText(graphics, distanceText, distanceFont, distanceBounds, Color.White,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
         else
@@ -223,24 +226,17 @@ internal sealed class FloatingAssistantForm : Form
             for (int i = 0; i < dots; i++)
             {
                 float dotAngle = angle + i * MathF.Tau / dots;
-                float x = Width / 2f + MathF.Cos(dotAngle) * 39f;
-                float y = Height / 2f + MathF.Sin(dotAngle) * 39f;
+                float x = width / 2f + MathF.Cos(dotAngle) * 39f;
+                float y = height / 2f + MathF.Sin(dotAngle) * 39f;
                 float dotSize = _busy ? 7f : 5f;
                 using SolidBrush dot = new(Color.FromArgb(235, Color.White));
-                e.Graphics.FillEllipse(dot, x - dotSize / 2f, y - dotSize / 2f, dotSize, dotSize);
+                graphics.FillEllipse(dot, x - dotSize / 2f, y - dotSize / 2f, dotSize, dotSize);
             }
 
             using Font font = new("Segoe UI", 17f + pulse, FontStyle.Bold, GraphicsUnit.Point);
-            TextRenderer.DrawText(e.Graphics, _busy ? "•••" : "AI", font, ClientRectangle, Color.White,
+            TextRenderer.DrawText(graphics, _busy ? "•••" : "AI", font, bounds, Color.White,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
-    }
-
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        base.OnMouseDown(e);
-        if (_collapsed && e.Button == MouseButtons.Left)
-            BeginDrag();
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -253,8 +249,7 @@ internal sealed class FloatingAssistantForm : Form
     {
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left) return;
-        bool click = EndDrag();
-        if (_collapsed && click) Expand();
+        EndDrag();
     }
 
     protected override void OnMouseCaptureChanged(EventArgs e)
@@ -265,6 +260,7 @@ internal sealed class FloatingAssistantForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _ball.Dispose();
         WindowPlacement.Save(_assistant.DataDirectory, _collapsed ? _expandedBounds : Bounds);
         if (_settingsWindow is { IsDisposed: false })
             _settingsWindow.Close();
@@ -292,6 +288,7 @@ internal sealed class FloatingAssistantForm : Form
         _ballMenu.Items.Add(new ToolStripSeparator());
         _ballMenu.Items.Add("退出", null, (_, _) => Close());
         ContextMenuStrip = _ballMenu;
+        _ball.ContextMenuStrip = _ballMenu;
     }
 
     private void BuildTrayIcon()
@@ -1050,27 +1047,32 @@ internal sealed class FloatingAssistantForm : Form
         if (!_collapsed)
         {
             Show();
+            WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
             return;
         }
-        Point anchor = Location;
+        bool wasVisible = _ball.Visible;
+        Point anchor = _ball.Location;
         _collapsed = false;
-        Padding = new Padding(6);
-        ShowInTaskbar = true;
-        Region? previousRegion = Region;
-        Region = null;
-        previousRegion?.Dispose();
-        MinimumSize = new Size(860, 600);
         Size desired = _expandedBounds.Size.Width > 0 ? _expandedBounds.Size : new Size(ExpandedWidth, ExpandedHeight);
         Rectangle area = Screen.FromPoint(anchor).WorkingArea;
-        MinimumSize = new Size(Math.Min(860, area.Width - 24), Math.Min(600, area.Height - 24));
-        ClientSize = new Size(Math.Min(desired.Width, area.Width - 24), Math.Min(desired.Height, area.Height - 24));
-        ApplyExpandedRegion();
-        Location = new Point(
-            Math.Clamp(anchor.X - Width + BallSize, area.Left, area.Right - Width),
-            Math.Clamp(anchor.Y, area.Top, area.Bottom - Height));
-        _expandedPanel.Visible = true;
+        Size restoredSize = new(Math.Min(desired.Width, area.Width - 24), Math.Min(desired.Height, area.Height - 24));
+        Point restoredLocation = ClampLocation(new Point(anchor.X - restoredSize.Width + BallSize, anchor.Y), area, restoredSize);
+        SuspendLayout();
+        try
+        {
+            MinimumSize = new Size(Math.Min(860, area.Width - 24), Math.Min(600, area.Height - 24));
+            Bounds = new Rectangle(restoredLocation, restoredSize);
+        }
+        finally { ResumeLayout(performLayout: true); }
+        _ball.Hide();
+        if (wasVisible)
+        {
+            Show();
+            Activate();
+            BringToFront();
+        }
         if (_worldSearch.Visible) _worldSearch.FocusSearch();
         else if (_encyclopedia.Visible) _encyclopedia.FocusSearch();
         else if (_quickReference.Visible) _quickReference.FocusSearch();
@@ -1189,23 +1191,14 @@ internal sealed class FloatingAssistantForm : Form
         if (_collapsed) return;
         Point anchor = Location;
         _expandedBounds = Bounds;
-        WindowPlacement.Save(_assistant.DataDirectory, _expandedBounds);
+        bool wasVisible = Visible;
         _collapsed = true;
-        Padding = Padding.Empty;
-        ShowInTaskbar = false;
-        _expandedPanel.Visible = false;
-        MinimumSize = Size.Empty;
-        ClientSize = new Size(BallSize, BallSize);
-        using GraphicsPath path = new();
-        path.AddEllipse(ClientRectangle);
-        Region? previous = Region;
-        Region = new Region(path);
-        previous?.Dispose();
         Rectangle area = Screen.FromPoint(anchor).WorkingArea;
-        Location = new Point(
-            Math.Clamp(anchor.X + Math.Max(0, _expandedBounds.Width - BallSize), area.Left, area.Right - Width),
-            Math.Clamp(anchor.Y, area.Top, area.Bottom - Height));
-        Invalidate();
+        _ball.Location = ClampLocation(new Point(anchor.X + Math.Max(0, _expandedBounds.Width - BallSize), anchor.Y), area, _ball.Size);
+        Hide();
+        if (wasVisible) _ball.Show();
+        _ball.Invalidate();
+        WindowPlacement.SaveInBackground(_assistant.DataDirectory, _expandedBounds);
     }
 
 

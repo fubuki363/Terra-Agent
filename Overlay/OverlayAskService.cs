@@ -38,9 +38,9 @@ internal sealed class OverlayAskService : IDisposable
     private readonly NavigationState _navigation = new();
     private int _navigationRefreshRunning;
 
-    public OverlayAskService()
+    public OverlayAskService(string? dataDirectory = null)
     {
-        DataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TerraWikiOverlay");
+        DataDirectory = dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TerraWikiOverlay");
         Directory.CreateDirectory(DataDirectory);
         string adjacentKey = Path.Combine(AppContext.BaseDirectory, "key");
         _keyProvider = new ApiKeyProvider(DataDirectory, adjacentKey);
