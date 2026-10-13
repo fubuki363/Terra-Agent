@@ -546,7 +546,7 @@ internal static partial class TerrariaWorldLocator
 
     private static bool TryGetBiomeDefinition(string value, out BiomeDefinition definition)
     {
-        string key = value.Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
+        string key = value.Split('/')[0].Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
         definition = key switch
         {
             "forest" or "森林" or "纯净森林" => Direct("forest", "森林/出生区域", "forest"),
@@ -554,7 +554,7 @@ internal static partial class TerrariaWorldLocator
             "beach" or "海滩" => Direct("beach", "海滩", "beach"),
             "space" or "sky" or "太空" or "天空" => Direct("space", "太空", "space"),
             "surface" or "地表" => Direct("surface", "地表", "surface"),
-            "underground" or "地下" => Direct("underground", "地下层", "underground"),
+            "underground" or "地下" or "地下层" => Direct("underground", "地下层", "underground"),
             "cavern" or "洞穴" or "洞穴层" => Direct("cavern", "洞穴层", "cavern"),
             "underworld" or "hell" or "地狱" or "地狱层" => Direct("underworld", "地狱", "underworld"),
             "shimmer" or "aether" or "微光" or "微光湖" or "以太" => Tiles("shimmer", "微光湖/以太", true, Array.Empty<ushort>(), Array.Empty<ushort>(), 1),
@@ -571,7 +571,7 @@ internal static partial class TerrariaWorldLocator
             "underground_snow" or "地下雪原" or "地下冰雪" => Tiles("underground_snow", "地下雪原", false, new ushort[] { 147, 161, 162, 163, 164 }, new ushort[] { 40, 71 }, 5, VerticalZone.Underground),
             "desert" or "沙漠" => Tiles("desert", "沙漠", false, new ushort[] { 53, 112, 116, 234, 396, 397, 398, 399, 400, 401, 402, 403, 479 }, Array.Empty<ushort>(), 5),
             "underground_desert" or "地下沙漠" => Tiles("underground_desert", "地下沙漠", false, new ushort[] { 53, 112, 116, 234, 396, 397, 398, 399, 400, 401, 402, 403, 404, 479 }, new ushort[] { 187, 188, 189, 190, 191, 192, 193, 194, 195, 216, 217, 218, 219, 220, 221, 222, 223, 235 }, 5, VerticalZone.Underground),
-            "glowing_mushroom" or "mushroom" or "发光蘑菇" or "蘑菇地" => Tiles("glowing_mushroom", "发光蘑菇群系", false, new ushort[] { 70, 71, 72, 190, 528, 578 }, new ushort[] { 74, 80 }, 2),
+            "glowing_mushroom" or "mushroom" or "发光蘑菇" or "发光蘑菇群系" or "蘑菇地" => Tiles("glowing_mushroom", "发光蘑菇群系", false, new ushort[] { 70, 71, 72, 190, 528, 578 }, new ushort[] { 74, 80 }, 2),
             "dungeon" or "地牢" => Tiles("dungeon", "地牢", false, new ushort[] { 41, 43, 44, 481, 482, 483 }, new ushort[] { 7, 8, 9, 17, 18, 19, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105 }, 3),
             "jungle_temple" or "temple" or "丛林神庙" or "神庙" => Tiles("jungle_temple", "丛林神庙", false, new ushort[] { 226, 237 }, new ushort[] { 87, 112 }, 2),
             "granite" or "granite_cave" or "花岗岩" or "花岗岩洞" => Tiles("granite", "花岗岩洞", false, new ushort[] { 368, 369, 576 }, new ushort[] { 180, 181, 184 }, 2),
@@ -585,8 +585,8 @@ internal static partial class TerrariaWorldLocator
             "oasis" or "绿洲" => Tiles("oasis", "绿洲", false, new ushort[] { 530, 705 }, Array.Empty<ushort>(), 1, VerticalZone.Surface, 4),
             "gem_cave" or "gemstone_cave" or "宝石洞" or "宝石洞窟" => Tiles("gem_cave", "宝石洞窟", false, new ushort[] { 178, 566 }, new ushort[] { 48, 49, 50, 51, 52, 53 }, 1, VerticalZone.Underground, 8),
             "moss_cave" or "苔藓洞" or "苔藓群系" => Tiles("moss_cave", "苔藓洞", false, new ushort[] { 179, 180, 181, 182, 183, 184, 381, 534, 536, 539, 625, 627 }, Array.Empty<ushort>(), 2, VerticalZone.Cavern, 8),
-            "lava_moss" or "熔岩苔藓" => Tiles("lava_moss", "熔岩苔藓洞", false, new ushort[] { 381 }, new ushort[] { 341 }, 1, VerticalZone.Cavern, 8),
-            "glowing_moss" or "发光苔藓" => Tiles("glowing_moss", "发光苔藓洞", false, new ushort[] { 534, 536, 539, 625, 627 }, new ushort[] { 342, 343, 344, 345, 346 }, 1, VerticalZone.Cavern, 8),
+            "lava_moss" or "熔岩苔藓" or "熔岩苔藓洞" => Tiles("lava_moss", "熔岩苔藓洞", false, new ushort[] { 381 }, new ushort[] { 341 }, 1, VerticalZone.Cavern, 8),
+            "glowing_moss" or "发光苔藓" or "发光苔藓洞" => Tiles("glowing_moss", "发光苔藓洞", false, new ushort[] { 534, 536, 539, 625, 627 }, new ushort[] { 342, 343, 344, 345, 346 }, 1, VerticalZone.Cavern, 8),
             "enchanted_sword_shrine" or "enchantedswordshrine" or "sword_shrine" or "附魔剑冢" or "剑冢" or "附魔剑神龛" or "剑之神龛" =>
                 new("enchanted_sword_shrine", "附魔剑冢", false, new HashSet<ushort>(), new HashSet<ushort>(), 1, SwordShrineSampleStride, VerticalZone.SurfaceAndUnderground, "", true),
             _ => new("", "", false, new HashSet<ushort>(), new HashSet<ushort>(), int.MaxValue, DefaultTileSampleStride, VerticalZone.Any, "", false)

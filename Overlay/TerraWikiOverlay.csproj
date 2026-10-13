@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>TerraWikiOverlay</AssemblyName>
     <RootNamespace>TerraWikiOverlay</RootNamespace>
-    <Version>1.1.2</Version>
+    <Version>1.2.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <PublishSingleFile>true</PublishSingleFile>
@@ -20,6 +20,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Services\Models.cs" Link="Shared\Models.cs" />

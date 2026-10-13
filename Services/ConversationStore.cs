@@ -36,6 +36,7 @@ internal sealed class ConversationStore
         _path = Path.Combine(dataDirectory, "history-v1.json");
         _data = Load();
         EnsureActiveSession();
+        MergeEmptySessions();
     }
 
     public string ActiveSessionId
@@ -120,8 +121,14 @@ internal sealed class ConversationStore
     {
         lock (_sync)
         {
-            ConversationSession session = new();
-            _data.Sessions.Add(session);
+            MergeEmptySessions();
+            ConversationSession? session = _data.Sessions.FirstOrDefault(candidate => candidate.Turns.Count == 0);
+            if (session is null)
+            {
+                session = new ConversationSession();
+                _data.Sessions.Add(session);
+            }
+            session.UpdatedUtc = DateTime.UtcNow;
             _data.ActiveSessionId = session.Id;
             Prune(retentionDays);
             if (persist)
@@ -215,6 +222,15 @@ internal sealed class ConversationStore
             session.Turns = session.Turns.TakeLast(100).ToList();
         _data.Sessions = _data.Sessions.OrderByDescending(session => session.UpdatedUtc).Take(30).ToList();
         EnsureActiveSession();
+    }
+
+    private void MergeEmptySessions()
+    {
+        ConversationSession? keep = ActiveSession.Turns.Count == 0 ? ActiveSession
+            : _data.Sessions.Where(session => session.Turns.Count == 0)
+                .OrderByDescending(session => session.UpdatedUtc).FirstOrDefault();
+        if (keep is not null)
+            _data.Sessions.RemoveAll(session => session.Turns.Count == 0 && session.Id != keep.Id);
     }
 
     private void Save()

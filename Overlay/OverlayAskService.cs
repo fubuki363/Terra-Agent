@@ -97,6 +97,13 @@ internal sealed class OverlayAskService : IDisposable
         _navigation.SetTargets(ordered, result.PlayerTileX, result.PlayerTileY);
     }
 
+    public void NavigateToSearchResult(WorldSearchResult result, NavigationTarget selected)
+    {
+        _navigation.SetTargets(result.NavigationTargets.OrderBy(target =>
+            target.TileX == selected.TileX && target.TileY == selected.TileY ? 0 : 1),
+            result.PlayerTileX, result.PlayerTileY);
+    }
+
     public void CancelCurrentRequest()
     {
         lock (_requestSync) _activeRequest?.Cancel();

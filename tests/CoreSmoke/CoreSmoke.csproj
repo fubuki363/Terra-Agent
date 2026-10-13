@@ -39,6 +39,8 @@
     <Compile Include="..\..\Overlay\RuntimePlacementCatalog.cs" Link="Overlay\RuntimePlacementCatalog.cs" />
     <Compile Include="..\..\Overlay\TerrariaReadCoordinator.cs" Link="Overlay\TerrariaReadCoordinator.cs" />
     <Compile Include="..\..\Overlay\NavigationState.cs" Link="Overlay\NavigationState.cs" />
+    <Compile Include="..\..\Overlay\WorldSearchService.cs" Link="Overlay\WorldSearchService.cs" />
+    <Compile Include="..\..\Overlay\WikiBrowserNavigation.cs" Link="Overlay\WikiBrowserNavigation.cs" />
     <Compile Include="..\..\Overlay\OverlaySettingsStore.cs" Link="Overlay\OverlaySettingsStore.cs" />
     <Compile Include="..\..\Overlay\TerrariaManagedMemoryContextReader.cs" Link="Overlay\TerrariaManagedMemoryContextReader.cs" />
     <Compile Include="..\..\Overlay\TerrariaMemoryContextReader.cs" Link="Overlay\TerrariaMemoryContextReader.cs" />

@@ -20,6 +20,7 @@ internal sealed class FloatingAssistantForm : Form
     private readonly FloatingBallForm _ball;
     private readonly Panel _expandedPanel = new();
     private readonly Panel _contentHost = new();
+    private Control _conversationArea = null!;
     private readonly ConversationTimeline _conversation = new();
     private readonly QuickReferencePanel _quickReference = new();
     private readonly FullEncyclopediaPanel _encyclopedia;
@@ -35,6 +36,8 @@ internal sealed class FloatingAssistantForm : Form
     private readonly Button _nextNavigationButton = new();
     private readonly Button _cancelButton = new();
     private readonly TableLayoutPanel _bodyLayout = new();
+    private readonly TableLayoutPanel _composerLayout = new();
+    private Button? _maximizeButton;
     private Control? _sidebar;
     private bool _sidebarVisible = true;
     private Rectangle _expandedBounds;
@@ -136,10 +139,19 @@ internal sealed class FloatingAssistantForm : Form
         KeyDown += (_, args) =>
         {
             if (args.Control && args.KeyCode == Keys.N) { CreateNewSession(); args.SuppressKeyPress = true; }
-            else if (args.Control && args.KeyCode == Keys.L) { _input.Focus(); args.SuppressKeyPress = true; }
+            else if (args.Control && args.KeyCode == Keys.L)
+            {
+                if (_encyclopedia.Visible) _encyclopedia.FocusSearch();
+                else if (_worldSearch.Visible) _worldSearch.FocusSearch();
+                else if (_quickReference.Visible) _quickReference.FocusSearch();
+                else _input.Focus();
+                args.SuppressKeyPress = true;
+            }
             else if (args.KeyCode == Keys.Escape)
             {
-                if (_busy) _assistant.CancelCurrentRequest(); else Collapse();
+                if (_busy) _assistant.CancelCurrentRequest();
+                else if (!(_worldSearch.Visible && _worldSearch.CancelSearch())
+                    && !(_encyclopedia.Visible && _encyclopedia.StopLoading())) Collapse();
                 args.SuppressKeyPress = true;
             }
         };
@@ -334,22 +346,24 @@ internal sealed class FloatingAssistantForm : Form
         _expandedPanel.Controls.Add(shell);
         shell.Controls.Add(BuildHeader(), 0, 0);
 
-        Panel statusPanel = new() { Dock = DockStyle.Fill, BackColor = Background };
+        TableLayoutPanel statusPanel = new() { Dock = DockStyle.Fill, BackColor = Background, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _status.Dock = DockStyle.Fill;
         _status.Padding = new Padding(22, 0, 10, 0);
         _status.AutoEllipsis = true;
         _status.TextAlign = ContentAlignment.MiddleLeft;
         _status.ForeColor = Muted;
-        statusPanel.Controls.Add(_status);
-        _usage.Dock = DockStyle.Right;
-        _usage.Width = 220;
+        statusPanel.Controls.Add(_status, 0, 0);
+        _usage.Dock = DockStyle.Fill;
+        _usage.AutoEllipsis = true;
         _usage.TextAlign = ContentAlignment.MiddleRight;
         _usage.Padding = new Padding(0, 0, 16, 0);
         _usage.ForeColor = Color.FromArgb(110, 189, 221);
         _usage.Cursor = Cursors.Hand;
         _usage.Click += (_, _) => OpenSettings(2);
-        statusPanel.Controls.Add(_usage);
-        _usage.BringToFront();
+        statusPanel.Controls.Add(_usage, 1, 0);
         shell.Controls.Add(statusPanel, 0, 1);
 
         TableLayoutPanel body = _bodyLayout;
@@ -357,13 +371,14 @@ internal sealed class FloatingAssistantForm : Form
         body.ColumnCount = 2;
         body.RowCount = 1;
         body.Margin = Padding.Empty;
+        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220f));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         _sidebar = BuildSessionSidebar();
         body.Controls.Add(_sidebar, 0, 0);
         _contentHost.Dock = DockStyle.Fill;
         _contentHost.BackColor = Background;
-        Control conversationArea = BuildConversationArea();
+        Control conversationArea = _conversationArea = BuildConversationArea();
         conversationArea.Dock = DockStyle.Fill;
         _contentHost.Controls.Add(conversationArea);
         _quickReference.Visible = false;
@@ -378,7 +393,6 @@ internal sealed class FloatingAssistantForm : Form
         _contentHost.Controls.Add(_quickReference);
         _encyclopedia.Visible = false;
         _encyclopedia.BackRequested += ShowConversation;
-        _encyclopedia.CuratedRequested += ShowQuickReference;
         _encyclopedia.AskRequested += question =>
         {
             ShowConversation();
@@ -396,18 +410,28 @@ internal sealed class FloatingAssistantForm : Form
 
     private Control BuildHeader()
     {
-        Panel header = new() { Dock = DockStyle.Fill, BackColor = Surface, Cursor = Cursors.SizeAll };
+        TableLayoutPanel header = new() { Dock = DockStyle.Fill, BackColor = Surface, Cursor = Cursors.SizeAll,
+            ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDrag(); };
         header.MouseMove += (_, _) => ContinueDrag();
         header.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
 
-        Panel brand = new() { Dock = DockStyle.Fill, BackColor = Surface };
+        TableLayoutPanel brand = new() { Dock = DockStyle.Fill, BackColor = Surface, ColumnCount = 1, RowCount = 2,
+            Padding = new Padding(20, 4, 8, 3), Margin = Padding.Empty };
+        brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        brand.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
+        brand.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
         Label title = new()
         {
             Text = "✦  Terra Agent",
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 13f, FontStyle.Bold),
-            Bounds = new Rectangle(22, 9, 260, 31),
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent
         };
@@ -419,26 +443,29 @@ internal sealed class FloatingAssistantForm : Form
             Text = "随时提问 · 查找物体 · 跟随方向",
             ForeColor = Color.FromArgb(133, 151, 177),
             Font = new Font("Microsoft YaHei UI", 7.8f),
-            Bounds = new Rectangle(22, 45, 320, 21),
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent
         };
-        brand.Controls.Add(title);
-        brand.Controls.Add(subtitle);
+        brand.Controls.Add(title, 0, 0);
+        brand.Controls.Add(subtitle, 0, 1);
         brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDrag(); };
         brand.MouseMove += (_, _) => ContinueDrag();
         brand.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
-        header.Controls.Add(brand);
+        header.Controls.Add(brand, 0, 0);
 
         FlowLayoutPanel actions = new()
         {
-            Dock = DockStyle.Right,
+            Dock = DockStyle.Fill,
             AutoSize = true,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
             Padding = new Padding(0, 14, 8, 14),
             BackColor = Surface
         };
-        _quickReferenceButton = MakeHeaderButton("全图鉴", 82);
+        _quickReferenceButton = MakeHeaderButton("在线图鉴", 92);
         _quickReferenceButton.Click += (_, _) =>
         {
             if (_quickReference.Visible || _encyclopedia.Visible) ShowConversation();
@@ -457,18 +484,13 @@ internal sealed class FloatingAssistantForm : Form
             if (_sidebar is not null) _sidebar.Visible = _sidebarVisible;
             _bodyLayout.ColumnStyles[0].Width = _sidebarVisible ? 220 : 0;
         };
-        Button maximize = MakeHeaderButton("□", 44);
-        maximize.Click += (_, _) =>
-        {
-            Rectangle area = Screen.FromControl(this).WorkingArea;
-            if (Bounds == area && _beforeMaximize.Width > 0) Bounds = _beforeMaximize;
-            else { _beforeMaximize = Bounds; Bounds = area; }
-        };
+        Button maximize = _maximizeButton = MakeHeaderButton("□", 44);
+        maximize.Click += (_, _) => ToggleMaximize();
+        _toolTip.SetToolTip(maximize, "放大 / 还原窗口");
         Button locate = MakeHeaderButton("定位", 64);
         locate.Click += (_, _) => ShowWorldSearch();
         actions.Controls.AddRange(new Control[] { history, locate, _quickReferenceButton, settings, collapse, maximize, close });
-        header.Controls.Add(actions);
-        actions.BringToFront();
+        header.Controls.Add(actions, 1, 0);
         return header;
     }
 
@@ -502,23 +524,28 @@ internal sealed class FloatingAssistantForm : Form
         topActions.Controls.Add(_deleteSessionButton);
         layout.Controls.Add(topActions, 0, 1);
 
-        Panel bottom = new() { Dock = DockStyle.Fill, BackColor = Surface };
+        TableLayoutPanel bottom = new() { Dock = DockStyle.Fill, BackColor = Surface, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int row = 0; row < 3; row++) bottom.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 3));
         Button clearAll = MakeSidebarWideButton("清空全部历史");
-        clearAll.SetBounds(0, 4, 190, 34);
+        clearAll.Dock = DockStyle.Fill;
+        clearAll.Margin = new Padding(0, 4, 0, 5);
         clearAll.Click += (_, _) => ClearAllHistory();
-        Button clearCache = MakeSidebarWideButton("清理 Wiki 缓存");
-        clearCache.SetBounds(0, 46, 190, 34);
+        Button clearCache = MakeSidebarWideButton("清理检索缓存");
+        clearCache.Dock = DockStyle.Fill;
+        clearCache.Margin = new Padding(0, 4, 0, 5);
         clearCache.Click += (_, _) =>
         {
             int count = _assistant.ClearWikiCache();
             _status.Text = $"已清理 {count} 个 Wiki 缓存页面。";
         };
-        bottom.Controls.Add(clearAll);
-        bottom.Controls.Add(clearCache);
+        bottom.Controls.Add(clearAll, 0, 0);
+        bottom.Controls.Add(clearCache, 0, 1);
         Button older = MakeSidebarWideButton("加载更早的对话");
-        older.SetBounds(0, 88, 190, 34);
+        older.Dock = DockStyle.Fill;
+        older.Margin = new Padding(0, 4, 0, 5);
         older.Click += (_, _) => { _visibleHistoryTurns = Math.Min(100, _visibleHistoryTurns + 20); LoadCurrentConversation(); };
-        bottom.Controls.Add(older);
+        bottom.Controls.Add(older, 0, 2);
         layout.Controls.Add(bottom, 0, 3);
 
         _sessionList.Dock = DockStyle.Fill;
@@ -565,7 +592,7 @@ internal sealed class FloatingAssistantForm : Form
         area.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         area.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         area.RowStyles.Add(new RowStyle(SizeType.Absolute, 50f));
-        area.RowStyles.Add(new RowStyle(SizeType.Absolute, 168f));
+        area.RowStyles.Add(new RowStyle(SizeType.Absolute, 216f));
 
         _conversation.Dock = DockStyle.Fill;
         _conversation.BackColor = Background;
@@ -614,14 +641,24 @@ internal sealed class FloatingAssistantForm : Form
         _stopNavigationButton.BringToFront();
         area.Controls.Add(agentBar, 0, 1);
 
-        Panel composer = new() { Dock = DockStyle.Fill, Padding = new Padding(14, 10, 14, 10), BackColor = SurfaceRaised };
+        TableLayoutPanel composer = _composerLayout;
+        composer.Dock = DockStyle.Fill;
+        composer.Padding = new Padding(14, 8, 14, 8);
+        composer.Margin = Padding.Empty;
+        composer.BackColor = SurfaceRaised;
+        composer.ColumnCount = 1;
+        composer.RowCount = 3;
+        composer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        composer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        composer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        composer.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         FlowLayoutPanel suggestions = new()
         {
             BackColor = SurfaceRaised,
-            Bounds = new Rectangle(14, 7, 718, 30),
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Dock = DockStyle.Fill,
+            AutoSize = true,
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
+            WrapContents = true,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
@@ -629,7 +666,7 @@ internal sealed class FloatingAssistantForm : Form
         suggestions.Controls.Add(MakePromptChip("分析当前装备", "读取我当前的装备并分析配装问题，给出最优先的改进建议。"));
         suggestions.Controls.Add(MakePromptChip("查找箱中物品", "帮我查找一件物品放在哪个箱子。"));
         suggestions.Controls.Add(MakePromptChip("查找世界物体", "帮我查找当前世界里的矿物、特定箱子、家具或其他物体并开始导航。"));
-        composer.Controls.Add(suggestions);
+        composer.Controls.Add(suggestions, 0, 0);
 
         _input.Multiline = true;
         _input.AcceptsReturn = true;
@@ -639,24 +676,33 @@ internal sealed class FloatingAssistantForm : Form
         _input.ForeColor = Color.White;
         _input.Font = new Font("Microsoft YaHei UI", 10.5f);
         _input.PlaceholderText = "向 Terra Agent 提问……  Enter 发送，Shift+Enter 换行";
-        _input.SetBounds(14, 42, 718, 82);
+        _input.Dock = DockStyle.Fill;
+        _input.Margin = new Padding(0, 8, 0, 4);
         _input.KeyDown += InputOnKeyDown;
         _input.TextChanged += (_, _) => UpdateInputCounter();
-        composer.Controls.Add(_input);
+        composer.Controls.Add(_input, 0, 1);
+
+        TableLayoutPanel composerFooter = new() { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+        composerFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        composerFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+        composerFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 106));
+        composerFooter.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         _attachScreenshot.Text = "▣ 附带游戏截图";
         _attachScreenshot.ForeColor = Muted;
         _attachScreenshot.AutoSize = true;
-        _attachScreenshot.SetBounds(14, 139, 180, 28);
-        composer.Controls.Add(_attachScreenshot);
+        _attachScreenshot.Anchor = AnchorStyles.Left;
+        _attachScreenshot.Margin = Padding.Empty;
+        composerFooter.Controls.Add(_attachScreenshot, 0, 0);
         _toolTip.SetToolTip(_attachScreenshot, "仅勾选时捕获游戏窗口，并发送压缩截图给 DeepSeek。");
 
         _inputCounter.Text = "0 / 2000";
         _inputCounter.ForeColor = Color.FromArgb(125, 140, 164);
         _inputCounter.Font = new Font("Microsoft YaHei UI", 8f);
         _inputCounter.TextAlign = ContentAlignment.MiddleRight;
-        _inputCounter.SetBounds(548, 139, 76, 28);
-        composer.Controls.Add(_inputCounter);
+        _inputCounter.Dock = DockStyle.Fill;
+        _inputCounter.Margin = new Padding(0, 0, 10, 0);
+        composerFooter.Controls.Add(_inputCounter, 1, 0);
 
         _sendButton.Text = "发送  ↑";
         _sendButton.FlatStyle = FlatStyle.Flat;
@@ -664,11 +710,11 @@ internal sealed class FloatingAssistantForm : Form
         _sendButton.BackColor = Accent;
         _sendButton.ForeColor = Color.FromArgb(5, 35, 48);
         _sendButton.Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
-        _sendButton.SetBounds(634, 134, 98, 36);
+        _sendButton.Dock = DockStyle.Fill;
+        _sendButton.Margin = new Padding(0, 5, 0, 3);
         _sendButton.Click += async (_, _) => await SendQuestionAsync();
-        composer.Controls.Add(_sendButton);
-        composer.Resize += (_, _) => LayoutComposer(composer, suggestions);
-        LayoutComposer(composer, suggestions);
+        composerFooter.Controls.Add(_sendButton, 2, 0);
+        composer.Controls.Add(composerFooter, 0, 2);
         UpdateInputCounter();
         area.Controls.Add(composer, 0, 2);
         return area;
@@ -884,7 +930,9 @@ internal sealed class FloatingAssistantForm : Form
     {
         if (_busy)
             return;
-        _assistant.NewSession();
+        string previousSession = _assistant.ActiveSessionId;
+        string nextSession = _assistant.NewSession();
+        if (previousSession != nextSession) _input.Clear();
         ShowConversation();
         RefreshSessions();
         RefreshStatus();
@@ -1083,6 +1131,7 @@ internal sealed class FloatingAssistantForm : Form
     private void ShowEncyclopedia()
     {
         Expand();
+        _conversationArea.Visible = false;
         _worldSearch.Visible = false;
         _quickReference.Visible = false;
         _encyclopedia.Visible = true;
@@ -1095,6 +1144,7 @@ internal sealed class FloatingAssistantForm : Form
     private void ShowQuickReference()
     {
         Expand();
+        _conversationArea.Visible = false;
         _worldSearch.Visible = false;
         _encyclopedia.Visible = false;
         _quickReference.Visible = true;
@@ -1106,6 +1156,7 @@ internal sealed class FloatingAssistantForm : Form
 
     private void ShowConversation()
     {
+        _conversationArea.Visible = true;
         _worldSearch.Visible = false;
         _quickReference.Visible = false;
         _encyclopedia.Visible = false;
@@ -1117,6 +1168,7 @@ internal sealed class FloatingAssistantForm : Form
     private void ShowWorldSearch()
     {
         Expand();
+        _conversationArea.Visible = false;
         _quickReference.Visible = false;
         _encyclopedia.Visible = false;
         _worldSearch.Visible = true;
@@ -1166,14 +1218,21 @@ internal sealed class FloatingAssistantForm : Form
         return button;
     }
 
-    private void LayoutComposer(Control composer, Control suggestions)
+    private void ToggleMaximize()
     {
-        int contentWidth = Math.Max(320, composer.ClientSize.Width - 28);
-        suggestions.SetBounds(14, 7, contentWidth, 30);
-        _input.SetBounds(14, 42, contentWidth, 70);
-        _sendButton.SetBounds(composer.ClientSize.Width - 112, 122, 98, 34);
-        _inputCounter.SetBounds(composer.ClientSize.Width - 198, 125, 76, 28);
-        _attachScreenshot.Top = 125;
+        Rectangle area = Screen.FromControl(this).WorkingArea;
+        bool restore = Bounds == area && _beforeMaximize.Width > 0;
+        SuspendLayout();
+        try
+        {
+            if (restore) Bounds = _beforeMaximize;
+            else { _beforeMaximize = Bounds; Bounds = area; }
+            if (_maximizeButton is not null) _maximizeButton.Text = restore ? "□" : "❐";
+        }
+        finally { ResumeLayout(true); }
+        _expandedPanel.PerformLayout();
+        _bodyLayout.PerformLayout();
+        _contentHost.PerformLayout();
     }
 
     private void UpdateInputCounter()

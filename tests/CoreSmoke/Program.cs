@@ -23,6 +23,7 @@ internal static class Program
         RunQuickReferenceCatalogTests();
         RunSwordShrineDefinitionTests();
         RunWorldObjectTests();
+        RunWorldSearchAndBrowserTests();
         int objectFlag = Array.IndexOf(args, "--object-live");
         if (objectFlag >= 0)
         {
@@ -361,10 +362,35 @@ internal static class Program
             throw new InvalidOperationException("Agent 思考与技能调用轨迹没有随会话持久化。");
         string firstSession = history.ActiveSessionId;
         string secondSession = history.NewSession(true, 30);
+        if (history.NewSession(true, 30) != secondSession || history.SessionCount != 2)
+            throw new InvalidOperationException("连续创建空对话没有复用同一会话。");
         if (!history.Resume(firstSession, true) || history.ActiveTurnCount != 2)
             throw new InvalidOperationException("历史会话恢复失败。");
+        if (history.NewSession(true, 30) != secondSession || history.SessionCount != 2
+            || !history.Resume(firstSession, true))
+            throw new InvalidOperationException("从已有对话新建时没有复用已存在的空对话。");
         if (!history.DeleteSession(secondSession, true) || history.SessionCount != 1)
             throw new InvalidOperationException("单个历史会话删除失败。");
+
+        string legacyDirectory = Path.Combine(temporaryDirectory, "empty-session-migration");
+        Directory.CreateDirectory(legacyDirectory);
+        string retained = Guid.NewGuid().ToString("N");
+        File.WriteAllText(Path.Combine(legacyDirectory, "history-v1.json"), JsonSerializer.Serialize(new
+        {
+            ActiveSessionId = retained,
+            Sessions = new[]
+            {
+                new ConversationStore.ConversationSession { Id = retained },
+                new ConversationStore.ConversationSession(),
+                new ConversationStore.ConversationSession { Turns = new() { new ConversationTurn { Question = "保留", Answer = "历史" } } }
+            }
+        }));
+        ConversationStore migrated = new(legacyDirectory);
+        if (migrated.SessionCount != 2 || migrated.ActiveSessionId != retained[..8]
+            || migrated.NewSession(true, 30) != retained[..8]
+            || migrated.ListSessions(30).Sum(session => session.Turns.Count) != 1
+            || new ConversationStore(legacyDirectory).SessionCount != 2)
+            throw new InvalidOperationException("合并旧空对话时损坏了非空历史或活动会话。");
 
         UsageTracker usage = new(temporaryDirectory);
         usage.RecordApiCall(new DeepSeekUsage
@@ -607,6 +633,54 @@ internal static class Program
         if (!WorldObjectCatalog.TryMatch(allStatues, new WorldTile(105, 32, 0, 54), out int wrapped, out _) || wrapped != 55)
             throw new InvalidOperationException("雕像纹理换行样式解析失败。");
         Console.WriteLine("OK objects aliases=bulb+heart+fruit statues=localized+style dedup=top-left");
+    }
+
+    private static void RunWorldSearchAndBrowserTests()
+    {
+        foreach (string biome in TerrariaWorldLocator.SupportedBiomeNames)
+            if (!TerrariaWorldLocator.SupportsBiomeName(biome))
+                throw new InvalidOperationException("定位下拉选项不能被读取器解析：" + biome);
+        OverlaySettings settings = new();
+        foreach (WorldSearchKind kind in Enum.GetValues<WorldSearchKind>())
+        {
+            if (WorldSearchService.PermissionError(kind, settings) is not null)
+                throw new InvalidOperationException("默认定位权限错误。");
+            settings.IncludeMemoryContext = false;
+            if (WorldSearchService.PermissionError(kind, settings) is null)
+                throw new InvalidOperationException("直接定位绕过了实时读取权限。");
+            settings.IncludeMemoryContext = true;
+        }
+        settings.EnableBiomeLocator = false;
+        if (WorldSearchService.PermissionError(WorldSearchKind.Biomes, settings) is null
+            || WorldSearchService.PermissionError(WorldSearchKind.Storage, settings) is not null)
+            throw new InvalidOperationException("群系权限错误地影响了储物定位。");
+        NavigationTarget target = new("item", "魔镜 · 药水箱", 123, 456, "第 2 排第 3 个");
+        StorageSearchResult storage = new("魔镜", new[] { "魔镜" }, new[]
+        {
+            new StorageLocationHit("world_chest", "药水箱", "魔镜", 50, 2, "槽1、槽4", 123, 456, "第 2 排第 3 个", "右下", 100),
+            new StorageLocationHit("piggy_bank", "猪猪储蓄罐", "魔镜", 50, 1, "槽2", null, null, "随身个人储物", "无需世界导航", null)
+        }, new[] { target }, 10, 20, true, 30);
+        WorldSearchResult search = WorldSearchService.FromStorage(storage);
+        if (search.Rows.Count != 2 || search.Rows[0].Target != target || search.Rows[1].Target is not null
+            || !search.Rows[0].Detail.Contains("第 2 排第 3 个") || !search.Rows[0].Detail.Contains("槽1、槽4")
+            || !search.Summary.Contains("多人") || search.Rows[1].TileX.HasValue)
+            throw new InvalidOperationException("箱内物品定位丢失了排列、数量、槽位或个人储物边界。");
+        WorldSearchResult biomeResult = WorldSearchService.FromBiomes(new BiomeSearchResult("丛林",
+            new[] { new BiomeLocationHit("丛林", 123, 456, "右下", 100, 20) }, new[] { target }, 10, 20, 16, 1000, false));
+        WorldSearchResult objectResult = WorldSearchService.FromObjects(new WorldObjectSearchResult("生命果", "生命果",
+            new[] { new WorldObjectHit("生命果", 236, 0, 123, 456, "右下", 100) }, new[] { target }, 10, 20, 1, 20, 100, false, false, "部分扫描"));
+        if (biomeResult.Rows.Single().Target != target || !biomeResult.Summary.Contains("候选")
+            || objectResult.Rows.Single().Target != target || !objectResult.Summary.Contains("未完整"))
+            throw new InvalidOperationException("地图定位丢失了导航点或扫描完整性提示。");
+        string queryUrl = WikiBrowserNavigation.Resolve("生命果 & 药水", false);
+        if (!queryUrl.StartsWith("https://terraria.wiki.gg/zh/wiki/Special:Search?search=", StringComparison.Ordinal)
+            || !queryUrl.Contains(Uri.EscapeDataString("生命果 & 药水"))
+            || !WikiBrowserNavigation.Resolve("生命果", true).StartsWith("https://terraria.wiki.gg/wiki/", StringComparison.Ordinal)
+            || !WikiBrowserNavigation.IsWikiPage(WikiBrowserNavigation.Home(false)))
+            throw new InvalidOperationException("在线 Wiki 地址和站内搜索生成失败。");
+        foreach (string invalid in new[] { "https://terraria.wiki.gg.evil.example/", "https://evil.example/?terraria.wiki.gg", "file:///F:/key", "https://user@terraria.wiki.gg/", "http://terraria.wiki.gg/", "https://terraria.wiki.gg:444/", "javascript:alert(1)" })
+            if (WikiBrowserNavigation.IsWikiPage(invalid)) throw new InvalidOperationException("浏览器允许了非 Wiki 页面：" + invalid);
+        Console.WriteLine($"OK direct-locator modes=3 biomeOptions={TerrariaWorldLocator.SupportedBiomeNames.Count} storage=quantity+slots+placement personal=no-map browser=online+safe-urls");
     }
 
     private static async Task RunAgentToolLoopTest()
