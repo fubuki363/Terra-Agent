@@ -36,7 +36,10 @@ internal sealed class FloatingAssistantForm : Form
     private readonly Button _nextNavigationButton = new();
     private readonly Button _cancelButton = new();
     private readonly TableLayoutPanel _bodyLayout = new();
+    private readonly TableLayoutPanel _shellLayout = new();
     private readonly TableLayoutPanel _composerLayout = new();
+    private readonly TableLayoutPanel _headerActions = new();
+    private bool _sizingHeader;
     private Button? _maximizeButton;
     private Control? _sidebar;
     private bool _sidebarVisible = true;
@@ -125,6 +128,7 @@ internal sealed class FloatingAssistantForm : Form
             Size desired = saved?.Size ?? new Size(ExpandedWidth, ExpandedHeight);
             ClientSize = new Size(Math.Min(desired.Width, area.Width - 24), Math.Min(desired.Height, area.Height - 24));
             MinimumSize = new Size(Math.Min(860, area.Width - 24), Math.Min(600, area.Height - 24));
+            SizeHeaderActions();
             ApplyExpandedRegion();
             Location = saved.HasValue ? ClampLocation(saved.Value.Location, area, Size)
                 : new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
@@ -135,7 +139,11 @@ internal sealed class FloatingAssistantForm : Form
             Activate();
             BringToFront();
         };
-        Resize += (_, _) => { if (!_collapsed && IsHandleCreated) ApplyExpandedRegion(); };
+        Resize += (_, _) =>
+        {
+            if (_collapsed || !IsHandleCreated) return;
+            ApplyExpandedRegion();
+        };
         KeyDown += (_, args) =>
         {
             if (args.Control && args.KeyCode == Keys.N) { CreateNewSession(); args.SuppressKeyPress = true; }
@@ -331,14 +339,12 @@ internal sealed class FloatingAssistantForm : Form
         _expandedPanel.Visible = false;
         Controls.Add(_expandedPanel);
 
-        TableLayoutPanel shell = new()
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
+        TableLayoutPanel shell = _shellLayout;
+        shell.Dock = DockStyle.Fill;
+        shell.ColumnCount = 1;
+        shell.RowCount = 3;
+        shell.Margin = Padding.Empty;
+        shell.Padding = Padding.Empty;
         shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 76f));
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 38f));
@@ -456,15 +462,18 @@ internal sealed class FloatingAssistantForm : Form
         brand.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
         header.Controls.Add(brand, 0, 0);
 
-        FlowLayoutPanel actions = new()
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            Padding = new Padding(0, 14, 8, 14),
-            BackColor = Surface
-        };
+        TableLayoutPanel actions = _headerActions;
+        actions.Dock = DockStyle.Fill;
+        actions.AutoSize = true;
+        actions.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        actions.ColumnCount = 7;
+        actions.RowCount = 1;
+        actions.Margin = Padding.Empty;
+        actions.Padding = new Padding(0, 14, 8, 14);
+        actions.BackColor = Surface;
+        actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        for (int column = 0; column < actions.ColumnCount; column++)
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, column < 4 ? 104 : 44));
         _quickReferenceButton = MakeHeaderButton("在线图鉴", 92);
         _quickReferenceButton.Click += (_, _) =>
         {
@@ -489,9 +498,57 @@ internal sealed class FloatingAssistantForm : Form
         _toolTip.SetToolTip(maximize, "放大 / 还原窗口");
         Button locate = MakeHeaderButton("定位", 64);
         locate.Click += (_, _) => ShowWorldSearch();
-        actions.Controls.AddRange(new Control[] { history, locate, _quickReferenceButton, settings, collapse, maximize, close });
+        Button[] toolbar = { history, locate, _quickReferenceButton, settings, collapse, maximize, close };
+        for (int column = 0; column < toolbar.Length; column++)
+        {
+            Button button = toolbar[column];
+            button.Dock = DockStyle.Fill;
+            button.Padding = new Padding(8, 0, 8, 0);
+            button.FontChanged += (_, _) => SizeHeaderActions();
+            button.TextChanged += (_, _) => SizeHeaderActions();
+            actions.Controls.Add(button, column, 0);
+        }
+        actions.DpiChangedAfterParent += (_, _) => SizeHeaderActions();
+        SizeHeaderActions();
         header.Controls.Add(actions, 1, 0);
         return header;
+    }
+
+    private void SizeHeaderActions()
+    {
+        if (_sizingHeader || _headerActions.Controls.Count != 7) return;
+        _sizingHeader = true;
+        _headerActions.SuspendLayout();
+        try
+        {
+            int RequiredWidth(Button button) => TextRenderer.MeasureText(button.Text, button.Font, Size.Empty,
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width
+                + button.Padding.Horizontal + button.Margin.Horizontal + 12;
+            // Measured text already reflects the current font/DPI; do not scale it twice.
+            int width = Math.Max(96,
+                Enumerable.Range(0, 4).Select(column => (Button)_headerActions.GetControlFromPosition(column, 0)!).Max(RequiredWidth));
+            for (int column = 0; column < _headerActions.ColumnCount; column++)
+            {
+                Button button = (Button)_headerActions.GetControlFromPosition(column, 0)!;
+                float desired = column < 4 ? width : Math.Max(44, RequiredWidth(button));
+                if (_headerActions.ColumnStyles[column].Width != desired)
+                    _headerActions.ColumnStyles[column].Width = desired;
+            }
+            int textHeight = _headerActions.Controls.OfType<Button>().Max(button =>
+                TextRenderer.MeasureText(button.Text, button.Font, Size.Empty,
+                    TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Height + button.Padding.Vertical);
+            float headerHeight = Math.Max(76, textHeight + _headerActions.Padding.Vertical + 8);
+            if (_shellLayout.RowStyles[0].Height != headerHeight) _shellLayout.RowStyles[0].Height = headerHeight;
+            if (IsHandleCreated)
+            {
+                Rectangle area = Screen.FromControl(this).WorkingArea;
+                int minimumWidth = (int)Math.Ceiling(_headerActions.ColumnStyles.Cast<ColumnStyle>().Sum(column => column.Width))
+                    + _headerActions.Padding.Horizontal + Padding.Horizontal + 230;
+                MinimumSize = new Size(Math.Min(Math.Max(860, minimumWidth), area.Width - 24), MinimumSize.Height);
+                if (Width < MinimumSize.Width) Width = MinimumSize.Width;
+            }
+        }
+        finally { _headerActions.ResumeLayout(true); _sizingHeader = false; }
     }
 
     private Control BuildSessionSidebar()
@@ -1303,7 +1360,8 @@ internal sealed class FloatingAssistantForm : Form
             FlatStyle = FlatStyle.Flat,
             ForeColor = Color.White,
             BackColor = Surface,
-            Font = new Font("Microsoft YaHei UI", 9.5f)
+            Font = new Font("Microsoft YaHei UI", 9.5f),
+            TextAlign = ContentAlignment.MiddleCenter
         };
         button.FlatAppearance.BorderSize = 0;
         button.FlatAppearance.MouseOverBackColor = Color.FromArgb(60, 70, 92);

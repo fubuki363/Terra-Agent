@@ -48,9 +48,14 @@ internal static class UiFeatureChecks
             Save(form, Path.Combine(destination, "locator.png"));
             panel.Visible = false;
             conversationArea.Visible = true;
+            conversationArea.BringToFront();
             form.ClientSize = new Size(1180, 820);
             form.PerformLayout();
             Save(form, Path.Combine(destination, "chat.png"));
+            form.ClientSize = new Size(1920, 1080);
+            form.PerformLayout();
+            Save(form, Path.Combine(destination, "chat-expanded.png"));
+            form.ClientSize = new Size(1180, 820);
             Console.WriteLine("UI previews: " + destination);
         }
         panel.Visible = false;
@@ -65,19 +70,35 @@ internal static class UiFeatureChecks
     private static void Save(Form form, string path)
     {
         Application.DoEvents();
-        // Detach the test-owned root so children can be rendered without displaying a window.
+        // Render only this test's controls in an invisible, non-activating host.
         Control root = (Control)form.GetType().GetField("_expandedPanel", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
         Size size = root.Size;
         form.Controls.Remove(root);
+        using QuietPreviewHost host = new() { ClientSize = size };
         try
         {
-            root.Size = size;
+            host.Controls.Add(root);
+            host.Show();
+            Application.DoEvents();
             root.PerformLayout();
             foreach (Control container in root.Controls) container.PerformLayout();
             using Bitmap bitmap = new(size.Width, size.Height);
             root.DrawToBitmap(bitmap, new Rectangle(Point.Empty, size));
             bitmap.Save(path);
         }
-        finally { form.Controls.Add(root); root.Dock = DockStyle.Fill; }
+        finally { host.Controls.Remove(root); host.Close(); form.Controls.Add(root); root.Dock = DockStyle.Fill; }
+    }
+
+    private sealed class QuietPreviewHost : Form
+    {
+        protected override bool ShowWithoutActivation => true;
+        internal QuietPreviewHost()
+        {
+            AutoScaleMode = AutoScaleMode.None;
+            ShowInTaskbar = false;
+            Opacity = 0;
+            StartPosition = FormStartPosition.Manual;
+            Location = new Point(-16000, -16000);
+        }
     }
 }

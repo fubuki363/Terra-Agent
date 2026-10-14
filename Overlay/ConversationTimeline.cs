@@ -19,10 +19,11 @@ internal sealed class ConversationTimeline : UserControl
         _stack.AutoScroll = true;
         _stack.FlowDirection = FlowDirection.TopDown;
         _stack.WrapContents = false;
-        _stack.Padding = new Padding(22, 22, 22, 42);
+        _stack.Padding = new Padding(14, 22, 14, 42);
         _stack.BackColor = BackColor;
         _stack.Scroll += (_, _) => UpdateLatestButton();
         _stack.MouseWheel += (_, _) => QueueUpdateLatestButton();
+        _stack.ClientSizeChanged += (_, _) => ResizeCards();
         Controls.Add(_stack);
         _latest.Text = "↓ 回到最新";
         _latest.Size = new Size(114, 34);
@@ -157,8 +158,7 @@ internal sealed class ConversationTimeline : UserControl
         base.Dispose(disposing);
     }
 
-    private int AvailableCardWidth() => Math.Max(240, Math.Min(880,
-        _stack.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 44));
+    private int AvailableCardWidth() => Math.Max(240, _stack.ClientSize.Width - _stack.Padding.Horizontal);
 
     private void ResizeCards()
     {
@@ -167,8 +167,6 @@ internal sealed class ConversationTimeline : UserControl
         try
         {
             int width = AvailableCardWidth();
-            int side = Math.Max(16, (_stack.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - width) / 2);
-            _stack.Padding = new Padding(side, 22, side, 42);
             foreach (Control control in _stack.Controls)
                 control.Width = Math.Max(200, width - control.Margin.Horizontal);
         }
@@ -219,7 +217,7 @@ internal sealed class ConversationMessageCard : Panel
         Height = _compact ? 50 : 92;
         Margin = sender == "你" ? new Padding(58, 10, 0, 12)
             : sender is "模型思考" or "Agent 技能" or "技能结果" ? new Padding(8, 3, 16, 3)
-            : new Padding(0, 10, 12, 14);
+            : new Padding(0, 10, 0, 14);
         BackColor = sender == "你" ? Color.FromArgb(34, 44, 58)
             : sender is "错误" or "技能失败" or "技能未完成" ? Color.FromArgb(48, 31, 38)
             : Color.FromArgb(24, 29, 38);

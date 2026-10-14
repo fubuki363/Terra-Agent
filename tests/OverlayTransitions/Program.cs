@@ -19,6 +19,7 @@ internal static class Program
             Type type = assembly.GetType("TerraWikiOverlay.FloatingAssistantForm", throwOnError: true)!;
             form = (Form)Activator.CreateInstance(type, new object?[] { directory })!;
             RunResponsiveLayoutChecks(form, type);
+            HeaderAndChatAlignmentChecks.Run(form);
             UiFeatureChecks.Run(form, args);
             Panel panel = (Panel)type.GetField("_expandedPanel", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
             Form ball = (Form)type.GetField("_ball", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
