@@ -31,13 +31,13 @@ internal static class WorldLocatorAgentSkills
     {
         Name = FindObjectToolName,
         DisplayName = "查找世界物体",
-        Description = "在当前原版 Terraria 的实时地图中逐格定位世界物体。支持本机游戏样本库中的可放置物品，包括矿物、指定类型宝箱、各种家具、制作站、植物、装饰、背景墙，以及生命水晶、生命果、世纪之花花苞、指定雕像和石中剑等自然物体。下面的名称只是示例，不是白名单。可按完整中英文物品名、内部 TileID 名或图格ID定位，也可查矿物/家具/箱子等类别。查箱内库存用 find_item_in_storage，查区域用 locate_biome。未命中不等于从未生成。",
+        Description = "在当前原版 Terraria 的实时地图中逐格定位世界物体。目录结合本机物品样本、碎石机等工具的放置样式和自然拾取物映射，支持矿物、指定宝箱、家具、制作站、药草、染料植物、装饰、背景墙，以及大自然的恩赐、巨型龙蛋、友好巨石、丛林孢子、生命水晶、生命果、花苞、雕像和石中剑等。示例不是白名单。可按完整中英文物品名、TileID 内部名或图格ID查找，也可查植物/矿物/家具/箱子类别。宠物道具定位的是未拾取的世界物体，不是跟随玩家的移动宠物；随机掉落候选或装饰耗材请遵守结果 note，不保证实际掉落。查箱内库存用 find_item_in_storage，查区域用 locate_biome。未命中不等于从未生成。",
         Parameters = new
         {
             type = "object",
             properties = new
             {
-                object_name = new { type = "string", description = "正式物体名或类别，如 铁矿、金箱、木床、工作台、生命果、心雕像、矿物、家具。可放置物体目录由游戏数据生成，不限这些例子；也支持 TileID 内部英文名或 图格ID:数字。" },
+                object_name = new { type = "string", description = "正式物体名或类别，如 大自然的恩赐、巨型龙蛋、友好巨石、奇异植物、珊瑚、铁矿、金箱、生命果、植物、矿物、家具。不限这些例子；支持英文名、别名、TileID 内部名或 图格ID:数字。" },
                 maximum_results = new { type = "integer", minimum = 1, maximum = 24, description = "最多返回的最近目标数，默认 8。" }
             },
             required = new[] { "object_name" }, additionalProperties = false

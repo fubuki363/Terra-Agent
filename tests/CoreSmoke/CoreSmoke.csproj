@@ -37,6 +37,7 @@
     <Compile Include="..\..\Overlay\TerrariaWorldObjectLocator.cs" Link="Overlay\TerrariaWorldObjectLocator.cs" />
     <Compile Include="..\..\Overlay\WorldObjectCatalog.cs" Link="Overlay\WorldObjectCatalog.cs" />
     <Compile Include="..\..\Overlay\RuntimePlacementCatalog.cs" Link="Overlay\RuntimePlacementCatalog.cs" />
+    <Compile Include="..\..\Overlay\NaturalObjectCatalog.cs" Link="Overlay\NaturalObjectCatalog.cs" />
     <Compile Include="..\..\Overlay\TerrariaReadCoordinator.cs" Link="Overlay\TerrariaReadCoordinator.cs" />
     <Compile Include="..\..\Overlay\NavigationState.cs" Link="Overlay\NavigationState.cs" />
     <Compile Include="..\..\Overlay\WorldSearchService.cs" Link="Overlay\WorldSearchService.cs" />

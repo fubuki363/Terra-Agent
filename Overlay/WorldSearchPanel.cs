@@ -166,7 +166,7 @@ internal sealed class WorldSearchPanel : UserControl
         {
             WorldSearchKind.Biomes => new[] { "微光湖", "地下丛林", "猩红之地", "附魔剑冢", "浮空岛" },
             WorldSearchKind.Storage => new[] { "魔镜", "回忆药水", "铁锭", "木材", "生命水晶" },
-            _ => new[] { "生命果", "矿物", "金箱", "家具", "石中剑" }
+            _ => new[] { "大自然的恩赐", "巨型龙蛋", "友好巨石", "植物", "矿物" }
         };
         foreach (string name in examples)
         {
@@ -182,7 +182,7 @@ internal sealed class WorldSearchPanel : UserControl
         _status.Text = kind == WorldSearchKind.Biomes
             ? $"下拉列表提供全部 {TerrariaWorldLocator.SupportedBiomeNames.Count} 种可检测群系 / 世界层 / 结构，也可输入别名。"
             : kind == WorldSearchKind.Storage ? "搜索世界箱子及个人储物，显示数量、槽位和箱子排列提示。不消耗 AI 用量。"
-            : "输入矿物、指定宝箱、家具或自然物体名称；直接读取实时地图，不消耗 AI 用量。";
+            : "输入植物、矿物、宝箱、家具或自然拾取物名称；直接读取实时地图，不消耗 AI 用量。";
     }
 
     private async Task SearchAsync()

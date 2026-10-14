@@ -23,7 +23,13 @@ internal static class Program
         RunQuickReferenceCatalogTests();
         RunSwordShrineDefinitionTests();
         RunWorldObjectTests();
+        RunNaturalObjectTests();
         RunWorldSearchAndBrowserTests();
+        if (Array.Exists(args, argument => argument == "--catalog-live"))
+        {
+            RunNaturalCatalogLiveTest();
+            return 0;
+        }
         int objectFlag = Array.IndexOf(args, "--object-live");
         if (objectFlag >= 0)
         {
@@ -681,6 +687,79 @@ internal static class Program
         foreach (string invalid in new[] { "https://terraria.wiki.gg.evil.example/", "https://evil.example/?terraria.wiki.gg", "file:///F:/key", "https://user@terraria.wiki.gg/", "http://terraria.wiki.gg/", "https://terraria.wiki.gg:444/", "javascript:alert(1)" })
             if (WikiBrowserNavigation.IsWikiPage(invalid)) throw new InvalidOperationException("浏览器允许了非 Wiki 页面：" + invalid);
         Console.WriteLine($"OK direct-locator modes=3 biomeOptions={TerrariaWorldLocator.SupportedBiomeNames.Count} storage=quantity+slots+placement personal=no-map browser=online+safe-urls");
+    }
+
+    private static void RunNaturalObjectTests()
+    {
+        Dictionary<string, int> items = new() { ["NaturesGift"] = 223, ["JungleSpores"] = 331,
+            ["BoulderPet"] = 5523, ["PalworldChilletEgg"] = 6142, ["GlowingMushroom"] = 183 };
+        Dictionary<string, ushort> tiles = new() { ["JunglePlants"] = 61, ["BoulderThatSpawnsPet"] = 716,
+            ["PalworldChilletEgg"] = 752, ["MushroomPlants"] = 71 };
+        NaturalObjectRegistration[] rules = NaturalObjectCatalog.Build(items, tiles).ToArray();
+        PlacedObjectSpec[] specs = rules.Select(rule => new PlacedObjectSpec(
+            rule.EnglishName switch { "NaturesGift" => "大自然的恩赐", "JungleSpores" => "丛林孢子", "BoulderPet" => "友好巨石", "GlowingMushroom" => "发光蘑菇", _ => "巨型龙蛋" },
+            rule.EnglishName, rule.TileId, rule.Style, false, true, rule.SingleCell ? 1 : 2, rule.SingleCell ? 1 : 2,
+            18, rule.SingleCell ? new[] { 0 } : new[] { 0, 18 }, rule.SingleCell ? 18 : 36, rule.SingleCell ? 18 : 36,
+            true, rule.SingleCell ? 0 : 1, 1, 1, Plant: rule.Plant, Aliases: rule.Aliases, Note: rule.Note, NaturalPickup: true)).ToArray();
+        RuntimePlacementCatalog catalog = new(specs.Append(new("发光蘑菇", "GlowingMushroom", 190, 0,
+            false, false, 1, 1, 18, new[] { 0 }, 18, 18, true, 1, 1, 1)));
+        foreach (string query in new[] { "大自然的恩赐", "自然恩赐", "Nature's Gift", "NaturesGift", "Huge Dragon Egg", "Friendly Boulder", "植物", "所有植物" })
+            if (!catalog.TryResolve(query, out _)) throw new InvalidOperationException("自然物体名称失效：" + query);
+        catalog.TryResolve("大自然的恩赐", out WorldObjectDefinition gift);
+        for (short style = 0; style < 23; style++)
+            if (WorldObjectCatalog.TryMatch(gift, new WorldTile(61, 32, (short)(style * 18), 0), out _, out _) != (style == 9))
+                throw new InvalidOperationException("大自然的恩赐与普通丛林植物混淆。");
+        if (WorldObjectCatalog.TryMatch(gift, new WorldTile(61, 0, 162, 0), out _, out _)
+            || WorldObjectCatalog.TryMatch(gift, new WorldTile(61, 32, 163, 0), out _, out _)
+            || WorldObjectCatalog.TryMatch(gift, new WorldTile(61, 32, 144, 18), out _, out _))
+            throw new InvalidOperationException("自然植物接受了非活动/非法帧图格。");
+        catalog.TryResolve("丛林孢子", out WorldObjectDefinition spores);
+        if (!WorldObjectCatalog.TryMatch(spores, new WorldTile(61, 32, 144, 0), out _, out _)
+            || WorldObjectCatalog.TryMatch(spores, new WorldTile(61, 32, 162, 0), out _, out _))
+            throw new InvalidOperationException("丛林孢子样式过滤失败。");
+        foreach (var (query, id, other) in new[] { ("友好巨石", (ushort)716, (ushort)138), ("巨型龙蛋", (ushort)752, (ushort)138) })
+        {
+            catalog.TryResolve(query, out WorldObjectDefinition definition);
+            int count = 0;
+            foreach (short x in new short[] { 0, 18 }) foreach (short y in new short[] { 0, 18 })
+                if (WorldObjectCatalog.TryMatch(definition, new WorldTile(id, 32, x, y), out _, out _, out PlacedObjectSpec? placement))
+                { count++; if (placement?.Width != 2 || placement.Height != 2) throw new InvalidOperationException("多格自然物体尺寸错误。"); }
+            if (count != 1 || WorldObjectCatalog.TryMatch(definition, new WorldTile(other, 32, 0, 0), out _, out _))
+                throw new InvalidOperationException("特殊自然物体重复计数或混入普通巨石。");
+        }
+        catalog.TryResolve("发光蘑菇", out WorldObjectDefinition mushroom);
+        if (mushroom.TileIds.Contains((ushort)190) || !WorldObjectCatalog.TryMatch(mushroom, new WorldTile(71, 32, 72, 0), out _, out _))
+            throw new InvalidOperationException("自然发光蘑菇混入材料块或遗漏生长样式。");
+        Dictionary<string, ushort> oldTiles = new() { ["JunglePlants"] = 61 };
+        if (NaturalObjectCatalog.Build(items, oldTiles).Any(rule => rule.TileId is 716 or 752))
+            throw new InvalidOperationException("旧版本不存在的图格不应硬编码注册。");
+        using CancellationTokenSource cancel = new();
+        cancel.Cancel();
+        try { RuntimePlacementCatalog.Load(null!, null!, null!, cancel.Token); throw new InvalidOperationException("目录缓存绕过取消。"); }
+        catch (OperationCanceledException) { }
+        Console.WriteLine("OK natural-objects names=zh+en+aliases plants=style-filtered special=2x2-dedup pets=not-projectiles version=guarded");
+    }
+
+    private static void RunNaturalCatalogLiveTest()
+    {
+        using Process process = Process.GetProcessesByName("Terraria").FirstOrDefault(candidate => !candidate.HasExited)
+            ?? throw new InvalidOperationException("实时目录测试需要原版 Terraria 正在运行；不会自动启动游戏或加载存档。");
+        using DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: false);
+        using ClrRuntime runtime = target.ClrVersions.First().CreateRuntime();
+        ClrModule module = runtime.EnumerateModules().First(candidate => candidate.Name?.EndsWith("Terraria.exe", StringComparison.OrdinalIgnoreCase) == true);
+        RuntimePlacementCatalog catalog = RuntimePlacementCatalog.Load(module, runtime.AppDomains.First(), module.GetTypeByName("Terraria.Main")!, CancellationToken.None);
+        foreach (string query in new[] { "大自然的恩赐", "友好巨石", "巨型龙蛋", "丛林孢子", "发光蘑菇", "阿比盖尔的花", "奇异植物", "蓝浆果", "太阳花", "珊瑚", "植物" })
+        {
+            if (!catalog.TryResolve(query, out WorldObjectDefinition definition) || definition.Placements is null)
+                throw new InvalidOperationException("实时目录不能解析：" + query);
+            PlacedObjectSpec[] shapes = definition.Placements.Values.SelectMany(value => value).ToArray();
+            Console.WriteLine($"CATALOG {query} variants={shapes.Length} " + string.Join(';', shapes.Take(5).Select(spec => $"{spec.TypeId}:{spec.Style}/{spec.Width}x{spec.Height}/frame={spec.FrameWidth}x{spec.FrameHeight}")));
+            if (query == "大自然的恩赐" && (!shapes.Any(spec => spec.TypeId == 61 && spec.Style == 9)
+                || !shapes.Any(spec => spec.TypeId == 703 && spec.Style == 9))) throw new InvalidOperationException("自然/碎石机植物目录未同时接入。");
+            if (query is "友好巨石" or "巨型龙蛋" && shapes.Any(spec => !spec.Framed || spec.Width != 2 || spec.Height != 2))
+                throw new InvalidOperationException("实时自然物体布局不是2x2。");
+        }
+        Console.WriteLine($"OK live-catalog entries={catalog.Count} read-only=true suspended=false");
     }
 
     private static async Task RunAgentToolLoopTest()

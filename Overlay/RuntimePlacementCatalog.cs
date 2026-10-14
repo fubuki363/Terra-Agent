@@ -10,7 +10,8 @@ namespace TerraWikiOverlay;
 
 internal sealed record PlacedObjectSpec(string Name, string EnglishName, ushort TypeId, int Style, bool IsWall,
     bool Framed, int Width, int Height, int StepX, int[] RowOffsets, int FrameWidth, int FrameHeight,
-    bool Horizontal, int Wrap, int Multiplier, int LineSkip, bool Mineral = false)
+    bool Horizontal, int Wrap, int Multiplier, int LineSkip, bool Mineral = false,
+    bool Plant = false, string[]? Aliases = null, string Note = "", bool NaturalPickup = false)
 {
     public bool TryMatch(WorldTile tile, out int style)
     {
@@ -19,11 +20,13 @@ internal sealed record PlacedObjectSpec(string Name, string EnglishName, ushort 
         if (!Framed || IsWall) return true;
         if (tile.FrameX < 0 || tile.FrameY < 0 || tile.FrameX % FrameWidth != 0 || tile.FrameY % FrameHeight != 0) return false;
         int column = tile.FrameX / FrameWidth, row = tile.FrameY / FrameHeight;
-        style = Horizontal ? row * Math.Max(1, Wrap) + column : column * Math.Max(1, Wrap) + row;
+        // A zero wrap limit means an unwrapped strip; another texture row/column
+        // can be a variation, not another placement style.
+        style = Horizontal ? row * Math.Max(0, Wrap) + column : column * Math.Max(0, Wrap) + row;
         style /= Math.Max(1, Multiplier);
-        if (LineSkip > 1) style = Horizontal ? row / LineSkip * Math.Max(1, Wrap) + column
-            : column / LineSkip * Math.Max(1, Wrap) + row;
-        return style == Style;
+        if (LineSkip > 1) style = Horizontal ? row / LineSkip * Math.Max(0, Wrap) + column
+            : column / LineSkip * Math.Max(0, Wrap) + row;
+        return Style < 0 || style == Style;
     }
 }
 
@@ -33,10 +36,11 @@ internal sealed class RuntimePlacementCatalog
     private static string _cacheStamp = "";
     private readonly List<PlacedObjectSpec> _entries;
     public int Count => _entries.Count;
-    private RuntimePlacementCatalog(List<PlacedObjectSpec> entries) => _entries = entries;
+    internal RuntimePlacementCatalog(IEnumerable<PlacedObjectSpec> entries) => _entries = entries.ToList();
 
     public static RuntimePlacementCatalog Load(ClrModule module, ClrAppDomain domain, ClrType main, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         string stamp = module.Name + (File.Exists(module.Name) ? File.GetLastWriteTimeUtc(module.Name!).Ticks.ToString() : "");
         if (_cached is not null && _cacheStamp == stamp) return _cached;
         ClrType? samples = module.GetTypeByName("Terraria.ID.ContentSamples") ?? module.GetTypeByName("Terraria.GameContent.ContentSamples");
@@ -55,17 +59,24 @@ internal sealed class RuntimePlacementCatalog
         ClrType? tileSets = module.GetTypeByName("Terraria.ID.TileID+Sets") ?? module.GetTypeByName("Terraria.ID.TileID/Sets");
         bool[] ores = Flags(tileSets, "Ore", domain), gems = Flags(tileSets, "Gems", domain);
         Dictionary<int, string> english = new();
+        Dictionary<string, int> itemIds = new(StringComparer.Ordinal);
         Dictionary<string, ushort> naturalTypes = new(StringComparer.Ordinal);
         string? gamePath = TerrariaItemNameCatalog.FindTerrariaExecutable();
         if (gamePath is not null)
         {
             using AssemblyDefinition assembly = AssemblyDefinition.ReadAssembly(gamePath);
             foreach (FieldDefinition field in assembly.MainModule.GetType("Terraria.ID.ItemID")!.Fields)
-                if (field.HasConstant && field.Constant is not null) english.TryAdd(Convert.ToInt32(field.Constant), field.Name);
+                if (field.HasConstant && field.Constant is not null && field.Name != "Count")
+                {
+                    int id = Convert.ToInt32(field.Constant);
+                    english.TryAdd(id, field.Name);
+                    itemIds[field.Name] = id;
+                }
             foreach (FieldDefinition field in assembly.MainModule.GetType("Terraria.ID.TileID")!.Fields)
                 if (field.HasConstant && field.Constant is not null && field.Name != "Count") naturalTypes[field.Name] = Convert.ToUInt16(field.Constant);
         }
         List<PlacedObjectSpec> catalog = new();
+        HashSet<ushort> plantTypes = naturalTypes.Where(pair => NaturalObjectCatalog.IsPlantTile(pair.Key)).Select(pair => pair.Value).ToHashSet();
         for (int index = 0; index < entries.Length; index++)
         {
             if ((index & 63) == 0) token.ThrowIfCancellationRequested();
@@ -80,12 +91,18 @@ internal sealed class RuntimePlacementCatalog
             if (wall > 0 && wall < ushort.MaxValue)
                 catalog.Add(new(name, english.GetValueOrDefault(id, ""), (ushort)wall, 0, true, false, 1, 1, 18, new[] { 0 }, 18, 18, true, 1, 1, 1));
             if (tile < 0 || tile >= ushort.MaxValue) continue;
+            catalog.Add(CreateSpec(id, (ushort)tile, style));
+        }
+
+        PlacedObjectSpec CreateSpec(int id, ushort tile, int style)
+        {
+            string name = TerrariaItemNameCatalog.Resolve(id) ?? english.GetValueOrDefault(id, "物品 " + id);
             bool framed = tile < important.Length && important[tile];
             ClrObject shape = dataArray.IsValid && dataArray.IsArray && tile < dataArray.AsArray().Length
                 ? dataArray.AsArray().GetObjectValue(tile) : default;
             ClrObject subData = Object(Object(shape, "_subTiles"), "data");
             ClrObject subArray = Object(subData, "_items", "items");
-            if (subArray.IsValid && subArray.IsArray && style < subArray.AsArray().Length)
+            if (subArray.IsValid && subArray.IsArray && style >= 0 && style < subArray.AsArray().Length)
             {
                 ClrObject sub = subArray.AsArray().GetObjectValue(style);
                 if (sub.IsValid) shape = sub;
@@ -110,11 +127,65 @@ internal sealed class RuntimePlacementCatalog
             if (fullWidth <= 0) fullWidth = width * stepX;
             if (recordedHeight > 0) fullHeight = recordedHeight;
             if (!framed) { width = height = 1; rowOffsets = new[] { 0 }; fullWidth = fullHeight = 18; }
-            catalog.Add(new(name, english.GetValueOrDefault(id, ""), (ushort)tile, style, false, framed, width, height,
+            return new(name, english.GetValueOrDefault(id, ""), tile, style, false, framed, width, height,
                 stepX, rowOffsets, Math.Max(1, fullWidth), Math.Max(1, fullHeight), Read(styles, "horizontal", true),
                 Read(styles, "styleWrapLimit", 1), Math.Max(1, Read(styles, "styleMultiplier", 1)), Math.Max(1, Read(styles, "styleLineSkip", 1)),
                 (tile < ores.Length && ores[tile]) || (tile < gems.Length && gems[tile]) || english.GetValueOrDefault(id, "").EndsWith("Ore", StringComparison.Ordinal)
-                    || english.GetValueOrDefault(id, "") is "Hellstone" or "Obsidian"));
+                    || english.GetValueOrDefault(id, "") is "Hellstone" or "Obsidian", Plant: plantTypes.Contains(tile));
+        }
+
+        // Flexible wands include Rubblemaker decorations, shells, coral, gems and
+        // other objects which an item's createTile alone cannot describe.
+        ClrType? wands = module.GetTypeByName("Terraria.GameContent.FlexibleTileWand");
+        if (wands is not null)
+        {
+            foreach (ClrStaticField field in wands.StaticFields.Where(field => field.Type?.Name == wands.Name))
+            {
+                token.ThrowIfCancellationRequested();
+                ClrObject wand = field.ReadObject(domain);
+                ClrObject buckets = Object(Object(wand, "_options"), "entries", "_entries");
+                if (!buckets.IsValid || !buckets.IsArray) continue;
+                ClrArray bucketEntries = buckets.AsArray();
+                for (int index = 0; index < bucketEntries.Length; index++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    ClrValueType entry = bucketEntries.GetStructValue(index);
+                    int id = entry.ReadField<int>("key");
+                    ClrObject bucket = entry.ReadObjectField("value");
+                    if (id <= 0 || !bucket.IsValid) continue;
+                    ClrObject options = Object(bucket, "Options");
+                    ClrObject optionArray = Object(options, "_items", "items");
+                    if (!optionArray.IsValid || !optionArray.IsArray) continue;
+                    ClrArray values = optionArray.AsArray();
+                    int size = Math.Min(Read(options, "_size", 0), values.Length);
+                    for (int optionIndex = 0; optionIndex < size; optionIndex++)
+                    {
+                        ClrObject option = values.GetObjectValue(optionIndex);
+                        int tile = Read(option, "TileIdToPlace", -1), style = Read(option, "TileStyleToPlace", -1);
+                        if (tile < 0 || tile >= important.Length || style < 0) continue;
+                        PlacedObjectSpec spec = CreateSpec(id, (ushort)tile, style);
+                        string tileName = naturalTypes.FirstOrDefault(pair => pair.Value == tile).Key ?? "";
+                        // Rubble consumes building materials, but is not an ore deposit.
+                        if (tileName.Contains("Pile", StringComparison.Ordinal) || tileName.Contains("Detritus", StringComparison.Ordinal)
+                            || tileName.Contains("Stalactite", StringComparison.Ordinal))
+                            spec = spec with { Name = spec.Name + "（装饰）", EnglishName = spec.EnglishName + "Decoration", Mineral = false,
+                                Note = "装饰名称对应碎石机耗材，不保证挖掘后掉落该材料；不是矿脉或箱内库存。" };
+                        catalog.Add(spec);
+                    }
+                }
+            }
+        }
+        foreach (NaturalObjectRegistration natural in NaturalObjectCatalog.Build(itemIds, naturalTypes))
+        {
+            token.ThrowIfCancellationRequested();
+            PlacedObjectSpec spec = CreateSpec(natural.ItemId, natural.TileId, natural.Style) with
+                { Plant = natural.Plant, Aliases = natural.Aliases, Note = natural.Note, NaturalPickup = true };
+            // Wild single-cell plants use 18px frames even when their drawn sprite
+            // is taller than one map cell; they have no TileObjectData entry.
+            if (natural.SingleCell)
+                spec = spec with { Framed = true, Width = 1, Height = 1, StepX = 18, RowOffsets = new[] { 0 },
+                    FrameWidth = 18, FrameHeight = 18, Horizontal = true, Wrap = 0, Multiplier = 1, LineSkip = 1 };
+            catalog.Add(spec);
         }
         foreach (PlacedObjectSpec spec in catalog.ToArray())
         {
@@ -149,12 +220,15 @@ internal sealed class RuntimePlacementCatalog
         IEnumerable<PlacedObjectSpec> selected;
         if (key is "矿物" or "矿" or "ores" or "ore") selected = _entries.Where(item => !item.IsWall
             && item.Mineral);
+        else if (key is "植物" or "花草" or "plants" or "plant") selected = _entries.Where(item => !item.IsWall && item.Plant);
         else if (key is "家具" or "furniture") selected = _entries.Where(item => !item.IsWall && item.Framed && (item.Width > 1 || item.Height > 1));
         else if (key is "箱子" or "宝箱" or "chest" or "containers" or "世界箱子") selected = _entries.Where(item => !item.IsWall && item.TypeId is 21 or 467);
         else
         {
             List<PlacedObjectSpec> exact = family ? new() : _entries.Where(item => Normalize(item.Name.Replace("（上锁）", "", StringComparison.Ordinal)) == key || Normalize(item.EnglishName) == key
+                || (item.Aliases?.Any(alias => Normalize(alias) == key) ?? false)
                 || (item.Name.EndsWith('箱') && Normalize(item.Name[..^1] + "宝箱") == key)).ToList();
+            if (exact.Any(item => item.NaturalPickup)) exact.RemoveAll(item => !item.NaturalPickup && !item.Plant);
             if (exact.Count == 0 && key is "木床" or "木椅" or "木桌" or "木宝箱")
             {
                 string vanilla = key switch { "木床" => "Bed", "木椅" => "WoodenChair", "木桌" => "WoodenTable", _ => "Chest" };
@@ -172,14 +246,16 @@ internal sealed class RuntimePlacementCatalog
         definition = new("dynamic", matches.Select(item => item.Name).Distinct().Count() == 1 ? matches[0].Name : query.Trim(),
             matches.Select(item => item.TypeId).Distinct().ToArray(), 1, 1,
             Note: $"按本机游戏样本库匹配 {matches.Count} 种放置样式（目录共 {Count} 项）。"
-                + (matches.Any(item => !item.Framed || item.IsWall) ? "材料图格按 12 格网格合并方向点；材料计数为实际匹配图格数。" : "完整多格物体只计数一次，并验证其各部分图格。"),
+                + (matches.Any(item => !item.Framed || item.IsWall) ? "材料图格按 12 格网格合并方向点；材料计数为实际匹配图格数。" : "完整多格物体只计数一次，并验证其各部分图格。")
+                + (matches.Any(item => item.Plant) ? "植物包括不同生长阶段；数量为地图植株数，不是背包数量或保证收获数量。" : "")
+                + string.Join(" ", matches.Select(item => item.Note).Where(note => note.Length > 0).Distinct()),
             Placements: matches.GroupBy(item => item.TypeId).ToDictionary(group => group.Key, group => group.ToArray()), MatchWalls: walls);
         return true;
     }
 
     private static string Normalize(string text) => new(text.Replace("矿石", "矿", StringComparison.Ordinal)
         .Replace("椅子", "椅", StringComparison.Ordinal).Replace("桌子", "桌", StringComparison.Ordinal)
-        .Where(character => !char.IsWhiteSpace(character) && character is not '_' and not '-').Select(char.ToLowerInvariant).ToArray());
+        .Where(character => !char.IsWhiteSpace(character) && character is not '_' and not '-' and not '\'' and not '’').Select(char.ToLowerInvariant).ToArray());
     private static ClrObject Module(ClrObject shape, ClrObject fallback, string name)
     { ClrObject value = Object(shape, name); return value.IsValid ? value : Object(fallback, name); }
     private static ClrObject Object(ClrObject value, params string[] fields)
