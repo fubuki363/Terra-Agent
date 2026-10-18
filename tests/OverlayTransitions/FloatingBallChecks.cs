@@ -15,7 +15,8 @@ internal static class FloatingBallChecks
         for (int i = 0; i < 30; i++) a = slow.Advance(1d / 30, idle with { Busy = true, Dark = true }, true, true, false);
         for (int i = 0; i < 60; i++) b = fast.Advance(1d / 60, idle with { Busy = true, Dark = true }, true, true, false);
         Require(Math.Abs(a.Press - b.Press) < .00001 && Math.Abs(a.Reveal - b.Reveal) < .00001 &&
-            Math.Abs(a.Busy - b.Busy) < .00001 && Math.Abs(a.Time - b.Time) < .00001, "Motion depends on frame rate.");
+            Math.Abs(a.Busy - b.Busy) < .00001 && Math.Abs(a.Time - b.Time) < .00001 &&
+            Math.Abs(a.Orbit - b.Orbit) < .00001, "Motion depends on frame rate.");
         slow.Reset(idle, false); fast.Reset(idle, false);
         a = slow.Advance(3, idle with { Busy = true }, true, false, false);
         for (int i = 0; i < 90; i++) b = fast.Advance(1d / 30, idle with { Busy = true }, true, false, false);
@@ -37,6 +38,25 @@ internal static class FloatingBallChecks
         using (Bitmap first = Render(a))
         using (Bitmap second = Render(b))
             Require(EqualPixels(first, second), "Reduced-motion mode still animates decorative effects.");
+
+        slow.Reset(idle, false);
+        a = slow.Advance(.2, idle, false, false, false);
+        b = slow.Advance(.5, idle, false, false, false);
+        using (Bitmap first = Render(a))
+        using (Bitmap second = Render(b))
+            Require(DifferentPixels(first, second) > 250, "Idle animation is too subtle to see.");
+        a = slow.Advance(.15, idle, true, false, false, true);
+        b = slow.Advance(.1, idle, true, false, false, true);
+        Require(a.Drag > .8f && b.Orbit > a.Orbit, "Dragging did not boost the energy orbit.");
+        b = slow.Advance(.02, idle, false, false, false);
+        Require(b.Release == 1, "Dropping the ball did not trigger its release ripple.");
+        FloatingBallTrailMotion trace = new();
+        for (int i = 0; i <= 16; i++) trace.Update(new PointF(i * 8, 0), i / 60d, true, false);
+        Require(trace.Samples.Count > 2, "Dragging did not retain a trail.");
+        trace.Update(new PointF(128, 0), 1, false, false);
+        Require(trace.Samples.Count == 0, "Released trail did not expire.");
+        trace.Update(new PointF(0, 0), 2, true, true);
+        Require(trace.Samples.Count == 0, "Reduced motion retained a drag trail.");
 
         string? screenshots = null;
         int option = Array.IndexOf(args, "--screenshots");
@@ -62,33 +82,72 @@ internal static class FloatingBallChecks
             Directory.CreateDirectory(frames);
             FloatingBallMotion light = new(), dark = new();
             light.Reset(idle, false); dark.Reset(idle with { Dark = true }, false);
-            for (int i = 0; i < 150; i++)
+            FloatingBallTrailMotion lightTrail = new(), darkTrail = new();
+            for (int i = 0; i < 240; i++)
             {
-                bool nav = i >= 75;
-                var state = new FloatingBallState(i >= 30 && i < 125, false,
-                    nav ? Target(-80 + (i - 75) * 1.6f, i >= 125 ? 4 : 240 - (i - 75) * 3) : default);
-                bool hover = i >= 10 && i < 30, press = i >= 20 && i < 25;
-                using Bitmap canvas = new(320, 188, PixelFormat.Format32bppPArgb);
+                bool dragging = i >= 90 && i < 150, nav = i >= 205;
+                var state = new FloatingBallState(i >= 180 && i < 230, false,
+                    nav ? Target(-40, i >= 230 ? 4 : 240) : default);
+                bool hover = i >= 60 && i < 90 || dragging, press = i >= 80 && i < 85;
+                float phase = dragging ? (i - 90) / 60f * MathF.Tau : 0;
+                PointF head = new(160 + MathF.Sin(phase) * 88, 88 + MathF.Sin(phase * 2) * 18);
+                using Bitmap canvas = new(640, 210, PixelFormat.Format32bppPArgb);
                 using Graphics graphics = Graphics.FromImage(canvas);
-                graphics.Clear(Color.FromArgb(243, 245, 249));
-                using (SolidBrush background = new(Color.FromArgb(21, 21, 23))) graphics.FillRectangle(background, 160, 0, 160, 188);
-                using (Bitmap left = Render(light.Advance(1d / 30, state, hover, press, false))) graphics.DrawImageUnscaled(left, 28, 30);
-                using (Bitmap right = Render(dark.Advance(1d / 30, state with { Dark = true }, hover, press, false))) graphics.DrawImageUnscaled(right, 188, 30);
-                using Font font = new("Microsoft YaHei UI", 10, GraphicsUnit.Pixel);
-                using SolidBrush grey = new(Color.FromArgb(130, 137, 151));
-                string caption = i < 10 ? "待机" : i < 20 ? "悬停" : i < 25 ? "按下" : i < 30 ? "松开" : i < 75 ? "执行工具" : i < 125 ? "导航 + 执行" : "已到达";
-                graphics.DrawString(caption, font, grey, 52, 148);
-                graphics.DrawString(caption, font, grey, 212, 148);
+                string caption = i < 60 ? "待机 · 环绕光流" : i < 80 ? "悬停" : i < 85 ? "按下" : i < 90 ? "松开" : dragging ? "拖动 · 能量拖尾" : i < 180 ? "松手 · 渐隐" : !nav ? "执行工具" : i < 230 ? "导航 + 执行" : "已到达";
+                for (int side = 0; side < 2; side++)
+                {
+                    bool night = side == 1;
+                    FloatingBallFrame current = (night ? dark : light).Advance(1d / 30, state with { Dark = night }, hover, press, false, dragging);
+                    FloatingBallTrailMotion trail = night ? darkTrail : lightTrail;
+                    trail.Update(head, current.Time, dragging, false);
+                    using Bitmap tile = new(320, 210, PixelFormat.Format32bppPArgb);
+                    using Graphics tileGraphics = Graphics.FromImage(tile);
+                    tileGraphics.Clear(night ? Color.FromArgb(21, 21, 23) : Color.FromArgb(243, 245, 249));
+                    using Bitmap tail = new(288, 288, PixelFormat.Format32bppPArgb);
+                    using (Graphics tailGraphics = Graphics.FromImage(tail))
+                        FloatingBallTrailRenderer.Draw(tailGraphics, tail.Size, head, current.Time, night, trail.Samples);
+                    tileGraphics.DrawImageUnscaled(tail, (int)head.X - 144, (int)head.Y - 144);
+                    using (Bitmap ballImage = Render(current)) tileGraphics.DrawImageUnscaled(ballImage, (int)head.X - 52, (int)head.Y - 52);
+                    using Font font = new("Microsoft YaHei UI", 11, GraphicsUnit.Pixel);
+                    using SolidBrush grey = new(night ? Color.FromArgb(159, 171, 197) : Color.FromArgb(91, 111, 142));
+                    tileGraphics.DrawString(caption, font, grey, 105, 168);
+                    graphics.DrawImageUnscaled(tile, side * 320, 0);
+                }
                 canvas.Save(Path.Combine(frames, $"{i:000}.png"), ImageFormat.Png);
             }
         }
 
         IntPtr foreground = GetForegroundWindow();
-        using (FloatingBallForm ball = new(104, () => navigating, () => { }))
+        FloatingBallState liveState = idle;
+        using (FloatingBallForm ball = new(104, () => liveState, () => { }))
         {
             ball.Location = new Point(-30000, -30000);
             IntPtr handle = ball.Handle;
             ball.Show(); Application.DoEvents();
+            typeof(FloatingBallForm).GetField("_reducedMotion", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(ball, false);
+            Pump(300);
+            using (Bitmap first = Surface(ball).Snapshot())
+            {
+                Pump(220);
+                using Bitmap second = Surface(ball).Snapshot();
+                Require(DifferentPixels(first, second) > 150, "Actual idle window timer is not visibly animating.");
+            }
+            Point origin = new(ball.Left + 52, ball.Top + 52);
+            ball.BeginPointerDrag(origin, capturePointer: false); // Exercise the real path without moving/capturing the user's mouse.
+            for (int i = 1; i <= 22; i++) { ball.MovePointerDrag(new Point(origin.X + i * 8, origin.Y)); Pump(20); }
+            Form? trailWindow = (Form?)typeof(FloatingBallForm).GetField("_trail", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(ball);
+            Require(trailWindow?.Visible == true, "Actual drag did not display the trail window.");
+            int extendedStyle = GetWindowLong(trailWindow!.Handle, -20);
+            Require((extendedStyle & 0x08080020) == 0x08080020, "Trail must be layered, click-through and non-activating.");
+            using (Bitmap tail = Surface(trailWindow).Snapshot())
+                Require(Enumerable.Range(0, tail.Width).Any(x => Enumerable.Range(0, tail.Height).Any(y => tail.GetPixel(x, y).A > 30)),
+                    "Actual trail window has no visible light pixels.");
+            typeof(FloatingBallForm).GetMethod("OnMouseCaptureChanged", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(ball, new object[] { EventArgs.Empty });
+            Pump(750);
+            Require(!trailWindow.Visible, "Drag trail did not hide after release/capture loss.");
+            Require(ball.Handle == handle && ball.Size == new Size(104, 104), "Dragging changed ball HWND/size.");
+            liveState = navigating;
+            Pump(800);
             ball.RefreshState(); // Also exercises the real UpdateLayeredWindow and persistent DIB.
             uint before = GetGuiResources(Process.GetCurrentProcess().Handle, 0);
             Stopwatch renderTime = Stopwatch.StartNew();
@@ -106,7 +165,7 @@ internal static class FloatingBallChecks
             }
             Require(GetForegroundWindow() == foreground, "Ball activated while being shown.");
             ball.Hide();
-            Console.WriteLine($"OK ball: alpha light/dark × 4 states, 30/60fps parity, short turns, reduced motion, 600 native frames ({renderTime.Elapsed.TotalMilliseconds / 600:0.00}ms/frame), GDI {before}→{after}, hidden timer stopped, no activation/recreation");
+            Console.WriteLine($"OK ball: visible native idle timer + drag trail + fade/click-through, alpha light/dark × 4 states, 30/60fps parity, short turns, reduced motion, 600 native frames ({renderTime.Elapsed.TotalMilliseconds / 600:0.00}ms/frame), GDI {before}→{after}, hidden timer stopped, no activation/recreation");
         }
     }
 
@@ -125,7 +184,21 @@ internal static class FloatingBallChecks
         for (int x = 0; x < a.Width; x++) if (a.GetPixel(x, y) != b.GetPixel(x, y)) return false;
         return true;
     }
+    private static int DifferentPixels(Bitmap a, Bitmap b)
+    {
+        int count = 0;
+        for (int y = 0; y < a.Height; y++)
+        for (int x = 0; x < a.Width; x++) if (a.GetPixel(x, y) != b.GetPixel(x, y)) count++;
+        return count;
+    }
+    private static LayeredBallSurface Surface(Form form) => (LayeredBallSurface)form.GetType().GetField("_surface", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+    private static void Pump(int milliseconds)
+    {
+        Stopwatch watch = Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < milliseconds) { Application.DoEvents(); Thread.Sleep(4); }
+    }
     private static void Require(bool success, string message) { if (!success) throw new InvalidOperationException(message); }
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetGuiResources(IntPtr process, uint flags);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr window, int index);
 }

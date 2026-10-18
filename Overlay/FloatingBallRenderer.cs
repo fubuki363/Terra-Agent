@@ -15,7 +15,7 @@ internal static class FloatingBallRenderer
         graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         graphics.ScaleTransform(size.Width / 104f, size.Height / 104f);
         float breath = frame.ReducedMotion ? 0 : (float)Math.Sin(frame.Time * Math.Tau / 4.8);
-        float scale = .94f + .06f * frame.Reveal + .025f * frame.Hover - .065f * frame.Press + .004f * breath;
+        float scale = .94f + .06f * frame.Reveal + .018f * frame.Hover - .065f * frame.Press + .012f * breath;
         graphics.TranslateTransform(52, 52);
         graphics.ScaleTransform(scale, scale);
         graphics.TranslateTransform(-52, -52);
@@ -29,11 +29,10 @@ internal static class FloatingBallRenderer
             using SolidBrush shadow = new(Color.FromArgb((int)((2 + frame.Hover * 2) * (1 - spread / 9f)), Color.Black));
             graphics.FillEllipse(shadow, 11 - spread, 14 - spread, 82 + spread * 2, 82 + spread * 2);
         }
-        if (frame.Hover > .01f || frame.Busy > .01f)
-        {
-            using Pen glow = new(Alpha(accent, .07f * frame.Hover + .03f * frame.Busy), 6);
-            graphics.DrawEllipse(glow, 8, 8, 88, 88);
-        }
+        Color companion = Mix(Color.FromArgb(25, 172, 195), Color.FromArgb(100, 220, 245), frame.Dark);
+        companion = Mix(companion, accent, frame.Navigation * .8f);
+        using (Pen glow = new(Alpha(accent, .10f + .035f * breath + .07f * frame.Hover + .09f * frame.Drag), 7))
+            graphics.DrawEllipse(glow, 6.5f, 6.5f, 91, 91);
         Color top = Mix(Color.White, Color.FromArgb(40, 40, 44), frame.Dark);
         Color bottom = Mix(Color.FromArgb(245, 247, 251), Color.FromArgb(27, 27, 30), frame.Dark);
         using (LinearGradientBrush surface = new(new PointF(12, 11), new PointF(12, 93), top, bottom))
@@ -43,6 +42,8 @@ internal static class FloatingBallRenderer
         using (Pen rim = new(border, 1)) graphics.DrawEllipse(rim, 11.5f, 11.5f, 81, 81);
         using (Pen inner = new(Alpha(Color.White, .55f - frame.Dark * .49f), 1))
             graphics.DrawArc(inner, 13, 13, 78, 78, 210, 120);
+
+        DrawEnergy(graphics, frame, accent, companion);
 
         if (frame.Busy > .005f)
         {
@@ -89,6 +90,52 @@ internal static class FloatingBallRenderer
             DrawText(graphics, distance, label, Alpha(accent, frame.Navigation), new RectangleF(17, 65, 70, 18));
         }
         graphics.ResetTransform();
+    }
+
+    private static void DrawEnergy(Graphics graphics, FloatingBallFrame frame, Color accent, Color companion)
+    {
+        float angle = frame.ReducedMotion ? -45 : (float)frame.Orbit * 360 - 45;
+        float pulse = frame.ReducedMotion ? .5f : .5f + .5f * (float)Math.Sin(frame.Time * Math.Tau / 3.6);
+        using (GraphicsPath core = new())
+        {
+            core.AddEllipse(22, 22, 60, 60);
+            using PathGradientBrush aura = new(core) { CenterColor = Alpha(accent, .045f + .075f * pulse + .04f * frame.Drag), SurroundColors = new[] { Color.Transparent } };
+            graphics.FillEllipse(aura, 22, 22, 60, 60);
+        }
+        using (Pen track = new(Alpha(accent, .17f + .12f * frame.Drag), 1))
+            graphics.DrawEllipse(track, 6.5f, 6.5f, 91, 91);
+
+        // The inner aurora and the counter-rotating orbit remain visible while completely idle.
+        for (int i = 0; i < 2; i++)
+        {
+            float start = -angle * .7f + i * 180;
+            using Pen haze = new(Alpha(i == 0 ? accent : companion, .075f + frame.Drag * .08f), 7);
+            graphics.DrawArc(haze, 17, 17, 70, 70, start, 70);
+            using Pen filament = new(Alpha(i == 0 ? accent : companion, .18f), 1);
+            graphics.DrawArc(filament, 16, 16, 72, 72, start, 52);
+        }
+        FloatingBallOrbit.Draw(graphics, accent, companion, angle);
+        for (int particle = 0; particle < 6; particle++)
+        {
+            float phase = -angle * .55f + particle * 60;
+            float radians = phase * MathF.PI / 180;
+            float radius = 37 + 2 * MathF.Sin(radians * 3);
+            float size = 1.4f + (particle % 2) * .5f + frame.Drag;
+            using SolidBrush spark = new(Alpha(companion, .4f + frame.Dark * .25f));
+            graphics.FillEllipse(spark, 52 + MathF.Cos(radians) * radius - size / 2,
+                52 + MathF.Sin(radians) * radius - size / 2, size, size);
+        }
+        if (frame.Drag > .01f)
+        {
+            using Pen charge = new(Alpha(companion, frame.Drag * .7f), 1.4f) { DashPattern = new[] { 3f, 4f }, DashOffset = -angle / 8 };
+            graphics.DrawEllipse(charge, 11, 11, 82, 82);
+        }
+        if (frame.Release > .005f)
+        {
+            float radius = 40 + 8 * (1 - frame.Release);
+            using Pen ripple = new(Alpha(companion, frame.Release * .65f), 2 * frame.Release + .5f);
+            graphics.DrawEllipse(ripple, 52 - radius, 52 - radius, radius * 2, radius * 2);
+        }
     }
 
     private static void DrawText(Graphics graphics, string text, Font font, Color color, RectangleF bounds)

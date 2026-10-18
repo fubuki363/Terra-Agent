@@ -11,6 +11,8 @@ internal sealed class FloatingBallForm : Form
     private readonly System.Windows.Forms.Timer _timer = new();
     private readonly Stopwatch _clock = new();
     private LayeredBallSurface? _surface;
+    private readonly FloatingBallTrailMotion _trailMotion = new();
+    private FloatingBallTrailForm? _trail;
     private bool _dragging, _moved, _hovered, _reducedMotion;
     private Point _mouseStart, _windowStart;
     private double _previousTime;
@@ -64,6 +66,7 @@ internal sealed class FloatingBallForm : Form
             _hovered = _dragging = _moved = false;
             _previousTime = 0;
             _clock.Restart();
+            _trailMotion.Clear();
             _motion.Reset(_readState(), _reducedMotion);
             RefreshState();
             _timer.Start();
@@ -73,6 +76,8 @@ internal sealed class FloatingBallForm : Form
             _timer.Stop();
             _clock.Stop();
             _dragging = _hovered = false;
+            _trail?.Hide();
+            _trailMotion.Clear();
             Capture = false;
         }
     }
@@ -82,11 +87,20 @@ internal sealed class FloatingBallForm : Form
         if (!Visible || _surface is null || IsDisposed) return;
         double now = _clock.Elapsed.TotalSeconds;
         FloatingBallState state = _readState();
-        FloatingBallFrame frame = _motion.Advance(now - _previousTime, state, _hovered, _dragging && !_moved, _reducedMotion);
+        bool dragging = _dragging && _moved;
+        FloatingBallFrame frame = _motion.Advance(now - _previousTime, state, _hovered, _dragging && !_moved, _reducedMotion, dragging);
         _previousTime = now;
         FloatingBallRenderer.Draw(_surface.Graphics, ClientSize, frame);
         _surface.Present(Handle, Location);
-        _timer.Interval = _reducedMotion ? 250 : state.Busy || _hovered || _dragging || _motion.Settling ? 16 : state.Navigation.Active ? 33 : 40;
+        PointF head = new(Left + Width / 2f, Top + Height / 2f);
+        _trailMotion.Update(head, frame.Time, dragging, _reducedMotion);
+        if (_trailMotion.Samples.Count > 1)
+        {
+            _trail ??= new FloatingBallTrailForm();
+            _trail.Present(this, head, frame, _trailMotion.Samples);
+        }
+        else _trail?.Hide();
+        _timer.Interval = _reducedMotion ? 250 : state.Busy || _hovered || _dragging || _motion.Settling || _trailMotion.Samples.Count > 0 ? 16 : 25;
     }
 
     protected override void OnPaint(PaintEventArgs e) { }
@@ -109,21 +123,37 @@ internal sealed class FloatingBallForm : Form
     {
         base.OnMouseDown(args);
         if (args.Button != MouseButtons.Left) return;
+        BeginPointerDrag(Cursor.Position);
+    }
+
+    internal void BeginPointerDrag(Point pointer, bool capturePointer = true)
+    {
         _dragging = true;
         _moved = false;
-        _mouseStart = Cursor.Position;
+        _mouseStart = pointer;
         _windowStart = Location;
-        Capture = true;
+        if (capturePointer) Capture = true;
         RefreshState();
     }
 
     protected override void OnMouseMove(MouseEventArgs args)
     {
         base.OnMouseMove(args);
+        MovePointerDrag(Cursor.Position);
+    }
+
+    internal void MovePointerDrag(Point pointer)
+    {
         if (!_dragging) return;
-        Point delta = new(Cursor.Position.X - _mouseStart.X, Cursor.Position.Y - _mouseStart.Y);
+        Point delta = new(pointer.X - _mouseStart.X, pointer.Y - _mouseStart.Y);
         _moved |= Math.Abs(delta.X) + Math.Abs(delta.Y) > 4;
-        if (_moved) Location = new Point(_windowStart.X + delta.X, _windowStart.Y + delta.Y);
+        if (_moved)
+        {
+            // Seed the trail at the old center, then sample movement on the animation clock.
+            if (_trailMotion.Samples.Count == 0)
+                _trailMotion.Update(new PointF(Left + Width / 2f, Top + Height / 2f), _clock.Elapsed.TotalSeconds, true, _reducedMotion);
+            Location = new Point(_windowStart.X + delta.X, _windowStart.Y + delta.Y);
+        }
     }
 
     protected override void OnMouseUp(MouseEventArgs args)
@@ -148,7 +178,7 @@ internal sealed class FloatingBallForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _timer.Dispose(); _surface?.Dispose(); _surface = null; }
+        if (disposing) { _timer.Dispose(); _trail?.Dispose(); _surface?.Dispose(); _surface = null; }
         base.Dispose(disposing);
     }
 }

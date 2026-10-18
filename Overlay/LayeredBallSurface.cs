@@ -39,6 +39,12 @@ internal sealed class LayeredBallSurface : IDisposable
 
     public static bool ReducedMotion => SystemParametersInfo(0x1042, 0, out bool enabled, 0) && !enabled;
 
+    internal Bitmap Snapshot()
+    {
+        Graphics.Flush(FlushIntention.Sync);
+        return _bitmap.Clone(new Rectangle(Point.Empty, _size), PixelFormat.Format32bppPArgb);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
