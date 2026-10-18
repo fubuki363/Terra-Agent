@@ -19,7 +19,12 @@ internal sealed record AgentToolEvent(
     bool IsError,
     string Summary,
     string ResultContent,
-    int Step);
+    int Step,
+    string CallId = "",
+    long DurationMilliseconds = 0);
+
+// Content is a cumulative snapshot for one model step, so UI updates can be coalesced.
+internal sealed record AgentStreamEvent(int Step, int Attempt, string Kind, string Content);
 
 internal sealed record AgentReasoningEvent(
     int Step,

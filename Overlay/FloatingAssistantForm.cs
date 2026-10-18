@@ -6,78 +6,49 @@ namespace TerraWikiOverlay;
 
 internal sealed class FloatingAssistantForm : Form
 {
-    private static readonly Color Background = Color.FromArgb(19, 23, 30);
-    private static readonly Color Surface = Color.FromArgb(25, 31, 41);
-    private static readonly Color SurfaceRaised = Color.FromArgb(29, 37, 49);
-    private static readonly Color Accent = Color.FromArgb(102, 183, 255);
-    private static readonly Color AccentPurple = Color.FromArgb(145, 128, 255);
-    private static readonly Color Muted = Color.FromArgb(151, 156, 168);
+    private static readonly Color Background = Color.White;
+    private static readonly Color Accent = Color.FromArgb(65, 118, 230);
     private const int BallSize = 104;
     private const int ExpandedWidth = 1180;
     private const int ExpandedHeight = 820;
-
     private readonly OverlayAskService _assistant;
     private readonly FloatingBallForm _ball;
     private readonly Panel _expandedPanel = new();
     private readonly Panel _contentHost = new();
-    private Control _conversationArea = null!;
-    private readonly ConversationTimeline _conversation = new();
-    private readonly QuickReferencePanel _quickReference = new();
-    private readonly FullEncyclopediaPanel _encyclopedia;
-    private readonly WorldSearchPanel _worldSearch;
-    private readonly TextBox _input = new();
-    private readonly Label _inputCounter = new();
-    private readonly CheckBox _attachScreenshot = new();
-    private readonly Button _sendButton = new();
-    private readonly Label _status = new();
-    private readonly Label _usage = new();
-    private readonly Label _agentActivity = new();
-    private readonly Button _stopNavigationButton = new();
-    private readonly Button _nextNavigationButton = new();
-    private readonly Button _cancelButton = new();
-    private readonly TableLayoutPanel _bodyLayout = new();
-    private readonly TableLayoutPanel _shellLayout = new();
-    private readonly TableLayoutPanel _composerLayout = new();
-    private readonly TableLayoutPanel _headerActions = new();
-    private bool _sizingHeader;
-    private Button? _maximizeButton;
-    private Control? _sidebar;
-    private bool _sidebarVisible = true;
+    private readonly HarnessChatView _conversation;
+    private readonly HarnessFeaturesController _features;
+    private readonly WikiBrowserView _wiki;
+    private bool _darkMode;
+    private readonly ContextMenuStrip _ballMenu = new();
+    private readonly NotifyIcon _trayIcon = new();
+    private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 40 };
     private Rectangle _expandedBounds;
     private Rectangle _beforeMaximize;
     private int _visibleHistoryTurns = 20;
-    private readonly ListBox _sessionList = new();
-    private readonly Button _newSessionButton = new();
-    private readonly Button _deleteSessionButton = new();
-    private readonly ContextMenuStrip _ballMenu = new();
-    private Button? _quickReferenceButton;
-    private readonly NotifyIcon _trayIcon = new();
-    private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 40 };
-    private readonly ToolTip _toolTip = new();
-    private AssistantSettingsForm? _settingsWindow;
-
+    private string _draft = "";
+    private readonly Dictionary<string, string> _drafts = new();
+    private bool _attachGameScreenshot;
+    private string _lastNavigationUi = "";
     private bool _collapsed;
     private bool _busy;
-    private bool _loadingSessions;
-    private bool _dragging;
-    private bool _dragMoved;
-    private Point _dragStart;
-    private Point _formStart;
     private float _animationPhase;
     private DateTime _lastNavigationRefreshUtc;
 
     public FloatingAssistantForm(string? dataDirectory = null)
     {
         _assistant = new OverlayAskService(dataDirectory);
-        _encyclopedia = new FullEncyclopediaPanel(_assistant.DataDirectory);
-        _worldSearch = new WorldSearchPanel(_assistant);
+        _conversation = new HarnessChatView(_assistant.DataDirectory, _assistant.Settings.ThemeMode);
+        _features = new HarnessFeaturesController(_assistant, _conversation);
+        _wiki = new WikiBrowserView(_assistant.DataDirectory);
+        _darkMode = OverlayAppearance.IsDark(_assistant.Settings.ThemeMode);
         _ball = new FloatingBallForm(BallSize, DrawBall, Expand);
         Text = "Terra Agent";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = true;
         TopMost = true;
         BackColor = Background;
-        Padding = new Padding(6);
+        Padding = new Padding(4);
+        Font = new Font("Microsoft YaHei UI", 9f);
         DoubleBuffered = true;
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -86,6 +57,7 @@ internal sealed class FloatingAssistantForm : Form
         BuildExpandedPanel();
         BuildBallMenu();
         BuildTrayIcon();
+        ApplyAppearance(_darkMode);
         ClientSize = new Size(ExpandedWidth, ExpandedHeight);
         _expandedPanel.Visible = true;
 
@@ -95,25 +67,16 @@ internal sealed class FloatingAssistantForm : Form
             if (_animationPhase > MathF.Tau)
                 _animationPhase -= MathF.Tau;
             NavigationSnapshot navigation = _assistant.Navigation;
-            _stopNavigationButton.Visible = navigation.Active;
-            _nextNavigationButton.Visible = navigation.Active && navigation.TargetCount > 1;
             if (navigation.Active && DateTime.UtcNow - _lastNavigationRefreshUtc > TimeSpan.FromSeconds(1.25))
             {
                 _lastNavigationRefreshUtc = DateTime.UtcNow;
                 _assistant.RequestNavigationRefresh();
             }
-            if (!_busy && !_collapsed && navigation.Active)
+            string navigationText = navigation.Active ? NavigationStatusText(navigation) : "";
+            if (navigationText != _lastNavigationUi)
             {
-                _agentActivity.Text = NavigationStatusText(navigation);
-                _agentActivity.ForeColor = navigation.DistanceTiles <= 8
-                    ? Color.FromArgb(126, 235, 158)
-                    : Color.FromArgb(255, 205, 96);
-            }
-            else if (!_busy && !navigation.Active && (_agentActivity.Text.StartsWith("● 正在导航", StringComparison.Ordinal)
-                || _agentActivity.Text.StartsWith("● 已到达", StringComparison.Ordinal)))
-            {
-                _agentActivity.Text = "● 导航已停止 · Agent 已就绪";
-                _agentActivity.ForeColor = Color.FromArgb(126, 218, 190);
+                _lastNavigationUi = navigationText;
+                _conversation.Post(new { type = "navigation", active = navigation.Active, value = navigationText, count = navigation.TargetCount });
             }
             if (_collapsed)
                 _ball.Invalidate();
@@ -128,7 +91,6 @@ internal sealed class FloatingAssistantForm : Form
             Size desired = saved?.Size ?? new Size(ExpandedWidth, ExpandedHeight);
             ClientSize = new Size(Math.Min(desired.Width, area.Width - 24), Math.Min(desired.Height, area.Height - 24));
             MinimumSize = new Size(Math.Min(860, area.Width - 24), Math.Min(600, area.Height - 24));
-            SizeHeaderActions();
             ApplyExpandedRegion();
             Location = saved.HasValue ? ClampLocation(saved.Value.Location, area, Size)
                 : new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
@@ -149,17 +111,13 @@ internal sealed class FloatingAssistantForm : Form
             if (args.Control && args.KeyCode == Keys.N) { CreateNewSession(); args.SuppressKeyPress = true; }
             else if (args.Control && args.KeyCode == Keys.L)
             {
-                if (_encyclopedia.Visible) _encyclopedia.FocusSearch();
-                else if (_worldSearch.Visible) _worldSearch.FocusSearch();
-                else if (_quickReference.Visible) _quickReference.FocusSearch();
-                else _input.Focus();
+                _conversation.FocusInput();
                 args.SuppressKeyPress = true;
             }
             else if (args.KeyCode == Keys.Escape)
             {
                 if (_busy) _assistant.CancelCurrentRequest();
-                else if (!(_worldSearch.Visible && _worldSearch.CancelSearch())
-                    && !(_encyclopedia.Visible && _encyclopedia.StopLoading())) Collapse();
+                else if (!_features.CancelSearch() && !_wiki.StopLoading()) Collapse();
                 args.SuppressKeyPress = true;
             }
         };
@@ -169,7 +127,7 @@ internal sealed class FloatingAssistantForm : Form
     {
         base.OnHandleCreated(e);
         if (!NativeMethods.RegisterHotKey(Handle, NativeMethods.HotkeyId, NativeMethods.ModControl | NativeMethods.ModShift, NativeMethods.VkT))
-            _status.Text = "全局快捷键注册失败，可直接点击悬浮球。";
+            _conversation.Post(new { type = "notice", value = "全局快捷键注册失败，可直接点击悬浮球。" });
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
@@ -213,20 +171,18 @@ internal sealed class FloatingAssistantForm : Form
         bool navigating = navigation.Active;
         bool arrived = navigating && navigation.DistanceTiles <= 8f;
         Color navigationColor = arrived ? Color.FromArgb(82, 232, 142) : Color.FromArgb(255, 190, 62);
-        int inset = 7 - (int)MathF.Round(pulse * 3f);
-        int glowAlpha = 42 + (int)(pulse * 38f) + (_ball.Hovered ? 30 : 0);
-
-        using Pen outerGlow = new(Color.FromArgb(Math.Min(170, glowAlpha + (navigating ? 30 : 0)), navigating ? navigationColor : Accent), 4f + pulse * 3f);
-        graphics.DrawEllipse(outerGlow, inset, inset, width - inset * 2 - 1, height - inset * 2 - 1);
         Rectangle orb = new(10, 10, width - 21, height - 21);
-        using LinearGradientBrush fill = new(
-            orb,
-            navigating ? Color.FromArgb(255, 215, 92) : Color.FromArgb(46, 224, 255),
-            navigating ? Color.FromArgb(239, 106, 68) : AccentPurple,
-            35f + pulse * 35f);
+        using SolidBrush shadow = new(Color.FromArgb(_ball.Hovered ? 42 : 24, Color.Black));
+        graphics.FillEllipse(shadow, 9, 12, width - 18, height - 18);
+        using SolidBrush fill = new(navigating ? (arrived ? Color.FromArgb(44, 143, 89) : Color.FromArgb(184, 125, 30)) : (_darkMode ? Color.FromArgb(31, 33, 37) : Color.FromArgb(250, 251, 253)));
         graphics.FillEllipse(fill, orb);
-        using Pen ring = new(Color.FromArgb(225, 240, 255), 2f);
+        using Pen ring = new(navigating ? navigationColor : Color.FromArgb(217, 223, 233), _ball.Hovered ? 2f : 1f);
         graphics.DrawEllipse(ring, orb);
+        if (_busy)
+        {
+            using Pen progress = new(Accent, 3f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            graphics.DrawArc(progress, orb, _animationPhase * 70f, 110f);
+        }
 
         if (navigating && !_busy)
         {
@@ -241,52 +197,20 @@ internal sealed class FloatingAssistantForm : Form
         }
         else
         {
-            float angle = _animationPhase * (_busy ? 2.1f : 1f);
-            int dots = _busy ? 3 : 1;
-            for (int i = 0; i < dots; i++)
-            {
-                float dotAngle = angle + i * MathF.Tau / dots;
-                float x = width / 2f + MathF.Cos(dotAngle) * 39f;
-                float y = height / 2f + MathF.Sin(dotAngle) * 39f;
-                float dotSize = _busy ? 7f : 5f;
-                using SolidBrush dot = new(Color.FromArgb(235, Color.White));
-                graphics.FillEllipse(dot, x - dotSize / 2f, y - dotSize / 2f, dotSize, dotSize);
-            }
-
-            using Font font = new("Segoe UI", 17f + pulse, FontStyle.Bold, GraphicsUnit.Point);
-            TextRenderer.DrawText(graphics, _busy ? "•••" : "AI", font, bounds, Color.White,
+            using Font font = new("Segoe UI", 22f, FontStyle.Bold, GraphicsUnit.Point);
+            TextRenderer.DrawText(graphics, _busy ? "···" : "T", font, bounds, _darkMode ? Color.FromArgb(122, 170, 255) : Accent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+
         }
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        base.OnMouseMove(e);
-        ContinueDrag();
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        base.OnMouseUp(e);
-        if (e.Button != MouseButtons.Left) return;
-        EndDrag();
-    }
-
-    protected override void OnMouseCaptureChanged(EventArgs e)
-    {
-        base.OnMouseCaptureChanged(e);
-        if (!Capture) _dragging = false;
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _ball.Dispose();
         WindowPlacement.Save(_assistant.DataDirectory, _collapsed ? _expandedBounds : Bounds);
-        if (_settingsWindow is { IsDisposed: false })
-            _settingsWindow.Close();
+        _features.Dispose();
         _animationTimer.Stop();
         _animationTimer.Dispose();
-        _toolTip.Dispose();
         _assistant.Dispose();
         _ballMenu.Dispose();
         _trayIcon.Visible = false;
@@ -336,751 +260,190 @@ internal sealed class FloatingAssistantForm : Form
     {
         _expandedPanel.Dock = DockStyle.Fill;
         _expandedPanel.BackColor = Background;
-        _expandedPanel.Visible = false;
         Controls.Add(_expandedPanel);
-
-        TableLayoutPanel shell = _shellLayout;
-        shell.Dock = DockStyle.Fill;
-        shell.ColumnCount = 1;
-        shell.RowCount = 3;
-        shell.Margin = Padding.Empty;
-        shell.Padding = Padding.Empty;
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 76f));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 38f));
-        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-        _expandedPanel.Controls.Add(shell);
-        shell.Controls.Add(BuildHeader(), 0, 0);
-
-        TableLayoutPanel statusPanel = new() { Dock = DockStyle.Fill, BackColor = Background, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-        statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _status.Dock = DockStyle.Fill;
-        _status.Padding = new Padding(22, 0, 10, 0);
-        _status.AutoEllipsis = true;
-        _status.TextAlign = ContentAlignment.MiddleLeft;
-        _status.ForeColor = Muted;
-        statusPanel.Controls.Add(_status, 0, 0);
-        _usage.Dock = DockStyle.Fill;
-        _usage.AutoEllipsis = true;
-        _usage.TextAlign = ContentAlignment.MiddleRight;
-        _usage.Padding = new Padding(0, 0, 16, 0);
-        _usage.ForeColor = Color.FromArgb(110, 189, 221);
-        _usage.Cursor = Cursors.Hand;
-        _usage.Click += (_, _) => OpenSettings(2);
-        statusPanel.Controls.Add(_usage, 1, 0);
-        shell.Controls.Add(statusPanel, 0, 1);
-
-        TableLayoutPanel body = _bodyLayout;
-        body.Dock = DockStyle.Fill;
-        body.ColumnCount = 2;
-        body.RowCount = 1;
-        body.Margin = Padding.Empty;
-        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220f));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        _sidebar = BuildSessionSidebar();
-        body.Controls.Add(_sidebar, 0, 0);
         _contentHost.Dock = DockStyle.Fill;
-        _contentHost.BackColor = Background;
-        Control conversationArea = _conversationArea = BuildConversationArea();
-        conversationArea.Dock = DockStyle.Fill;
-        _contentHost.Controls.Add(conversationArea);
-        _quickReference.Visible = false;
-        _quickReference.BackRequested += ShowConversation;
-        _quickReference.AskRequested += question =>
+        _expandedPanel.Controls.Add(_contentHost);
+        _contentHost.Controls.Add(_conversation);
+        _contentHost.Controls.Add(_wiki);
+        _features.PageChanged += page =>
         {
-            ShowConversation();
-            _input.Text = question;
-            _input.SelectionStart = _input.TextLength;
-            _input.Focus();
+            _wiki.Visible = false;
+            if (page == "wiki") _wiki.Start();
         };
-        _contentHost.Controls.Add(_quickReference);
-        _encyclopedia.Visible = false;
-        _encyclopedia.BackRequested += ShowConversation;
-        _encyclopedia.AskRequested += question =>
+        _features.ThemeChanged += (mode, dark) => ApplyAppearance(dark);
+        _features.SettingsChanged += RefreshStatus;
+        _features.WikiBoundsChanged += bounds =>
         {
-            ShowConversation();
-            _input.Text = question;
-            _input.SelectionStart = _input.TextLength;
-            _input.Focus();
+            Rectangle requested = new(bounds.X, bounds.Y, Math.Max(0, bounds.Width), Math.Max(0, bounds.Height));
+            Rectangle clipped = Rectangle.Intersect(_contentHost.ClientRectangle, requested);
+            _wiki.Bounds = clipped;
+            _wiki.Visible = bounds.Visible && _features.Page == "wiki" && clipped.Width > 40 && clipped.Height > 40;
+            if (_wiki.Visible) _wiki.BringToFront();
         };
-        _contentHost.Controls.Add(_encyclopedia);
-        _worldSearch.Visible = false;
-        _worldSearch.BackRequested += ShowConversation;
-        _contentHost.Controls.Add(_worldSearch);
-        body.Controls.Add(_contentHost, 1, 0);
-        shell.Controls.Add(body, 0, 2);
-    }
-
-    private Control BuildHeader()
-    {
-        TableLayoutPanel header = new() { Dock = DockStyle.Fill, BackColor = Surface, Cursor = Cursors.SizeAll,
-            ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        header.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDrag(); };
-        header.MouseMove += (_, _) => ContinueDrag();
-        header.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
-
-        TableLayoutPanel brand = new() { Dock = DockStyle.Fill, BackColor = Surface, ColumnCount = 1, RowCount = 2,
-            Padding = new Padding(20, 4, 8, 3), Margin = Padding.Empty };
-        brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        brand.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
-        brand.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
-        Label title = new()
+        _features.WikiCommand += async (action, value) => await _wiki.ExecuteAsync(action, value);
+        _wiki.StateChanged += state => _conversation.Post(state);
+        void Ask(string question) { ShowConversation(); _draft = question; _conversation.SetDraft(question); _conversation.FocusInput(); }
+        _features.AskRequested += Ask;
+        _wiki.AskRequested += Ask;
+        _conversation.Command += (action, data) =>
         {
-            Text = "✦  Terra Agent",
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 13f, FontStyle.Bold),
-            Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
-            AutoEllipsis = true,
-            TextAlign = ContentAlignment.MiddleLeft,
-            BackColor = Color.Transparent
-        };
-        title.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDrag(); };
-        title.MouseMove += (_, _) => ContinueDrag();
-        title.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
-        Label subtitle = new()
-        {
-            Text = "随时提问 · 查找物体 · 跟随方向",
-            ForeColor = Color.FromArgb(133, 151, 177),
-            Font = new Font("Microsoft YaHei UI", 7.8f),
-            Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
-            AutoEllipsis = true,
-            TextAlign = ContentAlignment.MiddleLeft,
-            BackColor = Color.Transparent
-        };
-        brand.Controls.Add(title, 0, 0);
-        brand.Controls.Add(subtitle, 0, 1);
-        brand.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) BeginDrag(); };
-        brand.MouseMove += (_, _) => ContinueDrag();
-        brand.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) EndDrag(); };
-        header.Controls.Add(brand, 0, 0);
-
-        TableLayoutPanel actions = _headerActions;
-        actions.Dock = DockStyle.Fill;
-        actions.AutoSize = true;
-        actions.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        actions.ColumnCount = 7;
-        actions.RowCount = 1;
-        actions.Margin = Padding.Empty;
-        actions.Padding = new Padding(0, 14, 8, 14);
-        actions.BackColor = Surface;
-        actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        for (int column = 0; column < actions.ColumnCount; column++)
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, column < 4 ? 104 : 44));
-        _quickReferenceButton = MakeHeaderButton("在线图鉴", 92);
-        _quickReferenceButton.Click += (_, _) =>
-        {
-            if (_quickReference.Visible || _encyclopedia.Visible) ShowConversation();
-            else ShowEncyclopedia();
-        };
-        Button settings = MakeHeaderButton("设置", 72);
-        settings.Click += (_, _) => OpenSettings();
-        Button collapse = MakeHeaderButton("—", 44);
-        collapse.Click += (_, _) => Collapse();
-        Button close = MakeHeaderButton("×", 44);
-        close.Click += (_, _) => Close();
-        Button history = MakeHeaderButton("历史", 64);
-        history.Click += (_, _) =>
-        {
-            _sidebarVisible = !_sidebarVisible;
-            if (_sidebar is not null) _sidebar.Visible = _sidebarVisible;
-            _bodyLayout.ColumnStyles[0].Width = _sidebarVisible ? 220 : 0;
-        };
-        Button maximize = _maximizeButton = MakeHeaderButton("□", 44);
-        maximize.Click += (_, _) => ToggleMaximize();
-        _toolTip.SetToolTip(maximize, "放大 / 还原窗口");
-        Button locate = MakeHeaderButton("定位", 64);
-        locate.Click += (_, _) => ShowWorldSearch();
-        Button[] toolbar = { history, locate, _quickReferenceButton, settings, collapse, maximize, close };
-        for (int column = 0; column < toolbar.Length; column++)
-        {
-            Button button = toolbar[column];
-            button.Dock = DockStyle.Fill;
-            button.Padding = new Padding(8, 0, 8, 0);
-            button.FontChanged += (_, _) => SizeHeaderActions();
-            button.TextChanged += (_, _) => SizeHeaderActions();
-            actions.Controls.Add(button, column, 0);
-        }
-        actions.DpiChangedAfterParent += (_, _) => SizeHeaderActions();
-        SizeHeaderActions();
-        header.Controls.Add(actions, 1, 0);
-        return header;
-    }
-
-    private void SizeHeaderActions()
-    {
-        if (_sizingHeader || _headerActions.Controls.Count != 7) return;
-        _sizingHeader = true;
-        _headerActions.SuspendLayout();
-        try
-        {
-            int RequiredWidth(Button button) => TextRenderer.MeasureText(button.Text, button.Font, Size.Empty,
-                TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width
-                + button.Padding.Horizontal + button.Margin.Horizontal + 12;
-            // Measured text already reflects the current font/DPI; do not scale it twice.
-            int width = Math.Max(96,
-                Enumerable.Range(0, 4).Select(column => (Button)_headerActions.GetControlFromPosition(column, 0)!).Max(RequiredWidth));
-            for (int column = 0; column < _headerActions.ColumnCount; column++)
+            if (_features.Handle(action, data)) return;
+            string value = data.TryGetProperty("value", out var text) && text.ValueKind == System.Text.Json.JsonValueKind.String
+                ? text.GetString() ?? "" : "";
+            switch (action)
             {
-                Button button = (Button)_headerActions.GetControlFromPosition(column, 0)!;
-                float desired = column < 4 ? width : Math.Max(44, RequiredWidth(button));
-                if (_headerActions.ColumnStyles[column].Width != desired)
-                    _headerActions.ColumnStyles[column].Width = desired;
+                case "send": _draft = value; _ = SendQuestionAsync(); break;
+                case "draft": _draft = value; break;
+                case "screenshot": _attachGameScreenshot = value == "true"; break;
+                case "cancel": _assistant.CancelCurrentRequest(); break;
+                case "newSession": CreateNewSession(); break;
+                case "resume": SwitchSession(value); break;
+                case "deleteSession":
+                    if (!_busy)
+                    {
+                        _assistant.DeleteSession(value); _drafts.Remove(value);
+                        _draft = _drafts.GetValueOrDefault(_assistant.ActiveSessionId, ""); _conversation.SetDraft(_draft);
+                        RefreshSessions(); RefreshStatus();
+                    }
+                    break;
+                case "clearHistory":
+                    if (!_busy)
+                    {
+                        _assistant.ClearAllHistory(); _drafts.Clear(); _draft = ""; _conversation.SetDraft("");
+                        RefreshSessions(); RefreshStatus();
+                    }
+                    break;
+                case "clearCache":
+                    _conversation.Post(new { type = "notice", value = $"已清理 {_assistant.ClearWikiCache()} 个检索缓存页面。" });
+                    break;
+                case "older":
+                    if (!_busy) { _visibleHistoryTurns = Math.Min(100, _visibleHistoryTurns + 20); LoadCurrentConversation(); }
+                    break;
+                case "wiki": ShowEncyclopedia(); break;
+                case "locator": ShowWorldSearch(); break;
+                case "settings": OpenSettings(); break;
+                case "usage": OpenSettings(2); break;
+                case "collapse": Collapse(); break;
+                case "maximize": ToggleMaximize(); break;
+                case "close": Close(); break;
+                case "stopNavigation": StopNavigation(); break;
+                case "nextTarget": NextNavigationTarget(); break;
+                case "drag":
+                    NativeMethods.ReleaseCapture();
+                    NativeMethods.SendMessage(Handle, 0x00A1, (IntPtr)2, IntPtr.Zero);
+                    break;
             }
-            int textHeight = _headerActions.Controls.OfType<Button>().Max(button =>
-                TextRenderer.MeasureText(button.Text, button.Font, Size.Empty,
-                    TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Height + button.Padding.Vertical);
-            float headerHeight = Math.Max(76, textHeight + _headerActions.Padding.Vertical + 8);
-            if (_shellLayout.RowStyles[0].Height != headerHeight) _shellLayout.RowStyles[0].Height = headerHeight;
-            if (IsHandleCreated)
-            {
-                Rectangle area = Screen.FromControl(this).WorkingArea;
-                int minimumWidth = (int)Math.Ceiling(_headerActions.ColumnStyles.Cast<ColumnStyle>().Sum(column => column.Width))
-                    + _headerActions.Padding.Horizontal + Padding.Horizontal + 230;
-                MinimumSize = new Size(Math.Min(Math.Max(860, minimumWidth), area.Width - 24), MinimumSize.Height);
-                if (Width < MinimumSize.Width) Width = MinimumSize.Width;
-            }
-        }
-        finally { _headerActions.ResumeLayout(true); _sizingHeader = false; }
-    }
-
-    private Control BuildSessionSidebar()
-    {
-        Panel sidebar = new() { Dock = DockStyle.Fill, Padding = new Padding(16, 14, 14, 14), BackColor = Surface };
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32f));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42f));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 140f));
-        sidebar.Controls.Add(layout);
-        Label title = new()
-        {
-            Text = "对话历史",
-            Dock = DockStyle.Fill,
-            ForeColor = Color.White,
-            Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold)
         };
-        layout.Controls.Add(title, 0, 0);
-
-        FlowLayoutPanel topActions = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, BackColor = Surface };
-        _newSessionButton.Text = "+ 新对话";
-        StyleSidebarButton(_newSessionButton, 102, Accent, Color.FromArgb(5, 35, 48));
-        _newSessionButton.Click += (_, _) => CreateNewSession();
-        _deleteSessionButton.Text = "删除";
-        StyleSidebarButton(_deleteSessionButton, 60, SurfaceRaised, Color.White);
-        _deleteSessionButton.Click += (_, _) => DeleteSelectedSession();
-        topActions.Controls.Add(_newSessionButton);
-        topActions.Controls.Add(_deleteSessionButton);
-        layout.Controls.Add(topActions, 0, 1);
-
-        TableLayoutPanel bottom = new() { Dock = DockStyle.Fill, BackColor = Surface, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
-        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int row = 0; row < 3; row++) bottom.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 3));
-        Button clearAll = MakeSidebarWideButton("清空全部历史");
-        clearAll.Dock = DockStyle.Fill;
-        clearAll.Margin = new Padding(0, 4, 0, 5);
-        clearAll.Click += (_, _) => ClearAllHistory();
-        Button clearCache = MakeSidebarWideButton("清理检索缓存");
-        clearCache.Dock = DockStyle.Fill;
-        clearCache.Margin = new Padding(0, 4, 0, 5);
-        clearCache.Click += (_, _) =>
-        {
-            int count = _assistant.ClearWikiCache();
-            _status.Text = $"已清理 {count} 个 Wiki 缓存页面。";
-        };
-        bottom.Controls.Add(clearAll, 0, 0);
-        bottom.Controls.Add(clearCache, 0, 1);
-        Button older = MakeSidebarWideButton("加载更早的对话");
-        older.Dock = DockStyle.Fill;
-        older.Margin = new Padding(0, 4, 0, 5);
-        older.Click += (_, _) => { _visibleHistoryTurns = Math.Min(100, _visibleHistoryTurns + 20); LoadCurrentConversation(); };
-        bottom.Controls.Add(older, 0, 2);
-        layout.Controls.Add(bottom, 0, 3);
-
-        _sessionList.Dock = DockStyle.Fill;
-        _sessionList.BackColor = Surface;
-        _sessionList.ForeColor = Color.FromArgb(220, 228, 240);
-        _sessionList.BorderStyle = BorderStyle.None;
-        _sessionList.Font = new Font("Microsoft YaHei UI", 9f);
-        _sessionList.DrawMode = DrawMode.OwnerDrawFixed;
-        _sessionList.ItemHeight = 52;
-        _sessionList.IntegralHeight = false;
-        _sessionList.DrawItem += DrawSessionItem;
-        _sessionList.SelectedIndexChanged += (_, _) => SwitchSession();
-        layout.Controls.Add(_sessionList, 0, 2);
-        return sidebar;
-    }
-
-    private void DrawSessionItem(object? sender, DrawItemEventArgs e)
-    {
-        if (e.Index < 0 || e.Index >= _sessionList.Items.Count || _sessionList.Items[e.Index] is not SessionListItem item)
-            return;
-        bool selected = (e.State & DrawItemState.Selected) != 0;
-        using SolidBrush background = new(selected ? Color.FromArgb(39, 50, 68) : Surface);
-        e.Graphics.FillRectangle(background, e.Bounds);
-        if (selected)
-        {
-            using SolidBrush accent = new(Accent);
-            e.Graphics.FillRectangle(accent, e.Bounds.X, e.Bounds.Y + 7, 3, e.Bounds.Height - 14);
-        }
-        Rectangle titleBounds = new(e.Bounds.X + 8, e.Bounds.Y + 6, e.Bounds.Width - 12, 22);
-        Rectangle metaBounds = new(e.Bounds.X + 8, e.Bounds.Y + 29, e.Bounds.Width - 12, 18);
-        string title = item.Session.Title.Length <= 17 ? item.Session.Title : item.Session.Title[..17] + "…";
-        TextRenderer.DrawText(e.Graphics, title, _sessionList.Font, titleBounds, Color.White,
-            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-        using Font metaFont = new("Microsoft YaHei UI", 8f);
-        TextRenderer.DrawText(e.Graphics, $"{item.Session.TurnCount} 轮 · {item.Session.UpdatedUtc.ToLocalTime():MM-dd HH:mm}",
-            metaFont, metaBounds, Muted, TextFormatFlags.NoPadding);
-        using Pen divider = new(Color.FromArgb(43, 52, 69));
-        e.Graphics.DrawLine(divider, e.Bounds.Left + 8, e.Bounds.Bottom - 1, e.Bounds.Right - 8, e.Bounds.Bottom - 1);
-    }
-
-    private Control BuildConversationArea()
-    {
-        TableLayoutPanel area = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
-        area.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        area.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-        area.RowStyles.Add(new RowStyle(SizeType.Absolute, 50f));
-        area.RowStyles.Add(new RowStyle(SizeType.Absolute, 216f));
-
-        _conversation.Dock = DockStyle.Fill;
-        _conversation.BackColor = Background;
-        area.Controls.Add(_conversation, 0, 0);
-
-        Panel agentBar = new() { Dock = DockStyle.Fill, Padding = new Padding(22, 7, 18, 7), BackColor = Color.FromArgb(24, 25, 30) };
-        _stopNavigationButton.Text = "停止导航";
-        _stopNavigationButton.Dock = DockStyle.Right;
-        _stopNavigationButton.Width = 92;
-        _stopNavigationButton.Visible = false;
-        _stopNavigationButton.FlatStyle = FlatStyle.Flat;
-        _stopNavigationButton.FlatAppearance.BorderColor = Color.FromArgb(195, 102, 86);
-        _stopNavigationButton.BackColor = Color.FromArgb(70, 42, 48);
-        _stopNavigationButton.ForeColor = Color.FromArgb(255, 205, 190);
-        _stopNavigationButton.Font = new Font("Microsoft YaHei UI", 8.6f, FontStyle.Bold);
-        _stopNavigationButton.Cursor = Cursors.Hand;
-        _stopNavigationButton.Click += (_, _) => StopNavigation();
-        agentBar.Controls.Add(_stopNavigationButton);
-        _cancelButton.Text = "停止生成";
-        _cancelButton.Dock = DockStyle.Right;
-        _cancelButton.Width = 88;
-        _cancelButton.FlatStyle = FlatStyle.Flat;
-        _cancelButton.FlatAppearance.BorderSize = 0;
-        _cancelButton.BackColor = Color.FromArgb(68, 47, 53);
-        _cancelButton.ForeColor = Color.FromArgb(255, 205, 190);
-        _cancelButton.Visible = false;
-        _cancelButton.Click += (_, _) => _assistant.CancelCurrentRequest();
-        agentBar.Controls.Add(_cancelButton);
-        _nextNavigationButton.Text = "下一个";
-        _nextNavigationButton.Dock = DockStyle.Right;
-        _nextNavigationButton.Width = 72;
-        _nextNavigationButton.FlatStyle = FlatStyle.Flat;
-        _nextNavigationButton.FlatAppearance.BorderSize = 0;
-        _nextNavigationButton.BackColor = SurfaceRaised;
-        _nextNavigationButton.ForeColor = Color.White;
-        _nextNavigationButton.Visible = false;
-        _nextNavigationButton.Click += (_, _) => NextNavigationTarget();
-        agentBar.Controls.Add(_nextNavigationButton);
-        _agentActivity.Dock = DockStyle.Fill;
-        _agentActivity.Text = "● 就绪 · 状态分析 / 箱子查找 / 物体定位 / 群系导航";
-        _agentActivity.TextAlign = ContentAlignment.MiddleLeft;
-        _agentActivity.AutoEllipsis = true;
-        _agentActivity.ForeColor = Color.FromArgb(126, 218, 190);
-        _agentActivity.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
-        agentBar.Controls.Add(_agentActivity);
-        _stopNavigationButton.BringToFront();
-        area.Controls.Add(agentBar, 0, 1);
-
-        TableLayoutPanel composer = _composerLayout;
-        composer.Dock = DockStyle.Fill;
-        composer.Padding = new Padding(14, 8, 14, 8);
-        composer.Margin = Padding.Empty;
-        composer.BackColor = SurfaceRaised;
-        composer.ColumnCount = 1;
-        composer.RowCount = 3;
-        composer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        composer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        composer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        composer.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        FlowLayoutPanel suggestions = new()
-        {
-            BackColor = SurfaceRaised,
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        suggestions.Controls.Add(MakePromptChip("下一步做什么", "结合我当前的世界进度和装备，我下一步最适合做什么？"));
-        suggestions.Controls.Add(MakePromptChip("分析当前装备", "读取我当前的装备并分析配装问题，给出最优先的改进建议。"));
-        suggestions.Controls.Add(MakePromptChip("查找箱中物品", "帮我查找一件物品放在哪个箱子。"));
-        suggestions.Controls.Add(MakePromptChip("查找世界物体", "帮我查找当前世界里的矿物、特定箱子、家具或其他物体并开始导航。"));
-        composer.Controls.Add(suggestions, 0, 0);
-
-        _input.Multiline = true;
-        _input.AcceptsReturn = true;
-        _input.ScrollBars = ScrollBars.Vertical;
-        _input.BorderStyle = BorderStyle.FixedSingle;
-        _input.BackColor = Color.FromArgb(19, 23, 32);
-        _input.ForeColor = Color.White;
-        _input.Font = new Font("Microsoft YaHei UI", 10.5f);
-        _input.PlaceholderText = "向 Terra Agent 提问……  Enter 发送，Shift+Enter 换行";
-        _input.Dock = DockStyle.Fill;
-        _input.Margin = new Padding(0, 8, 0, 4);
-        _input.KeyDown += InputOnKeyDown;
-        _input.TextChanged += (_, _) => UpdateInputCounter();
-        composer.Controls.Add(_input, 0, 1);
-
-        TableLayoutPanel composerFooter = new() { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
-        composerFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        composerFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
-        composerFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 106));
-        composerFooter.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        _attachScreenshot.Text = "▣ 附带游戏截图";
-        _attachScreenshot.ForeColor = Muted;
-        _attachScreenshot.AutoSize = true;
-        _attachScreenshot.Anchor = AnchorStyles.Left;
-        _attachScreenshot.Margin = Padding.Empty;
-        composerFooter.Controls.Add(_attachScreenshot, 0, 0);
-        _toolTip.SetToolTip(_attachScreenshot, "仅勾选时捕获游戏窗口，并发送压缩截图给 DeepSeek。");
-
-        _inputCounter.Text = "0 / 2000";
-        _inputCounter.ForeColor = Color.FromArgb(125, 140, 164);
-        _inputCounter.Font = new Font("Microsoft YaHei UI", 8f);
-        _inputCounter.TextAlign = ContentAlignment.MiddleRight;
-        _inputCounter.Dock = DockStyle.Fill;
-        _inputCounter.Margin = new Padding(0, 0, 10, 0);
-        composerFooter.Controls.Add(_inputCounter, 1, 0);
-
-        _sendButton.Text = "发送  ↑";
-        _sendButton.FlatStyle = FlatStyle.Flat;
-        _sendButton.FlatAppearance.BorderSize = 0;
-        _sendButton.BackColor = Accent;
-        _sendButton.ForeColor = Color.FromArgb(5, 35, 48);
-        _sendButton.Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
-        _sendButton.Dock = DockStyle.Fill;
-        _sendButton.Margin = new Padding(0, 5, 0, 3);
-        _sendButton.Click += async (_, _) => await SendQuestionAsync();
-        composerFooter.Controls.Add(_sendButton, 2, 0);
-        composer.Controls.Add(composerFooter, 0, 2);
-        UpdateInputCounter();
-        area.Controls.Add(composer, 0, 2);
-        return area;
-    }
-
-    private void InputOnKeyDown(object? sender, KeyEventArgs e)
-    {
-        if (e.KeyCode != Keys.Enter || e.Shift)
-            return;
-        e.SuppressKeyPress = true;
-        _ = SendQuestionAsync();
     }
 
     private async Task SendQuestionAsync()
     {
         if (_busy || IsDisposed) return;
-        string question = _input.Text.Trim();
-        if (question.Length == 0)
-            return;
-        if (question.Length > 2000)
-        {
-            AppendMessage("错误", "问题请控制在 2000 个字符以内。", Color.Salmon);
-            return;
-        }
-
-        _input.Clear();
-        AppendMessage("你", question, Accent);
+        string question = _draft.Trim();
+        if (question.Length is < 1 or > 2000) return;
+        _draft = "";
+        string? previousTurnId = _assistant.GetCurrentTurns().LastOrDefault()?.Id;
+        ConversationTurn pending = new() { Question = question, Status = "running" };
+        _conversation.Post(new { type = "begin", turn = pending });
         SetBusy(true);
+        string? notice = null;
         Progress<OverlayMessage> progress = new(message =>
         {
             if (IsDisposed || Disposing) return;
             switch (message.Kind)
             {
                 case OverlayMessageKind.Status:
-                    _status.Text = message.Text;
-                    _agentActivity.Text = "● Agent 正在规划  ·  " + message.Text;
-                    _agentActivity.ForeColor = Color.FromArgb(118, 195, 255);
-                    break;
-                case OverlayMessageKind.Notice:
-                    AppendMessage("提示", message.Text, Color.FromArgb(255, 205, 128));
-                    break;
+                    _conversation.Post(new { type = "status", value = message.Text }); break;
+                case OverlayMessageKind.Stream:
+                    _conversation.Post(new { type = "stream", stream = message.Stream }); break;
                 case OverlayMessageKind.Reasoning:
-                    AppendMessage("模型思考", message.Text, Color.FromArgb(176, 159, 255));
-                    _agentActivity.Text = "● Agent 深度思考中";
-                    _agentActivity.ForeColor = Color.FromArgb(176, 159, 255);
-                    break;
+                case OverlayMessageKind.AssistantMessage:
                 case OverlayMessageKind.ToolCall:
-                    AppendMessage("Agent 技能", "🔧 " + message.Text, Color.FromArgb(92, 214, 190));
-                    _agentActivity.Text = "● 技能执行中  ·  " + message.Text;
-                    _agentActivity.ForeColor = Color.FromArgb(92, 214, 190);
-                    break;
                 case OverlayMessageKind.ToolResult:
-                    AppendMessage("技能结果", "✓ " + message.Text, Color.FromArgb(126, 218, 190));
-                    _agentActivity.Text = "● 技能已返回  ·  " + message.Text;
-                    _agentActivity.ForeColor = Color.FromArgb(126, 218, 190);
-                    break;
                 case OverlayMessageKind.ToolError:
-                    AppendMessage("技能未完成", "⚠ " + message.Text, Color.FromArgb(255, 178, 112));
-                    _agentActivity.Text = "● 技能未完成  ·  " + message.Text;
-                    _agentActivity.ForeColor = Color.FromArgb(255, 178, 112);
-                    break;
-                case OverlayMessageKind.Answer:
-                    _conversation.CompleteActivities();
-                    AppendMessage("Terra Agent", RemoveReferenceMarkers(message.Text), AccentPurple);
-                    _agentActivity.Text = "● Agent 已完成  ·  等待下一个问题";
-                    _agentActivity.ForeColor = Color.FromArgb(126, 218, 190);
-                    break;
-                case OverlayMessageKind.Source:
-                    break;
+                    _conversation.Post(new { type = "trace", trace = message.Trace }); break;
+                case OverlayMessageKind.Notice:
                 case OverlayMessageKind.Error:
-                    AppendMessage("错误", message.Text, Color.Salmon);
-                    _agentActivity.Text = "● Agent 执行失败  ·  " + message.Text;
-                    _agentActivity.ForeColor = Color.Salmon;
-                    break;
+                    notice = message.Text; break;
             }
         });
-
-        try
-        {
-            await _assistant.AskAsync(question, _attachScreenshot.Checked, progress);
-        }
+        try { await _assistant.AskAsync(question, _attachGameScreenshot, progress); }
         finally
         {
             if (!IsDisposed && !Disposing)
             {
-            SetBusy(false);
-            RefreshSessions(preserveTranscript: true);
-            RefreshStatus();
-            _input.Focus();
+                // Progress<T> posts onto the UI queue; settle after those queued deltas.
+                BeginInvoke(() =>
+                {
+                    if (IsDisposed) return;
+                    ConversationTurn? final = _assistant.GetCurrentTurns().LastOrDefault();
+                    if (final is null || final.Id == previousTurnId)
+                    {
+                        pending.Status = "error"; pending.Notice = notice ?? "请求未完成"; final = pending;
+                    }
+                    _conversation.Post(new { type = "finish", turn = final });
+                    SetBusy(false); RefreshSessions(preserveTranscript: true); RefreshStatus();
+                    _conversation.FocusInput();
+                });
             }
         }
     }
 
     private void RefreshSessions(bool preserveTranscript = false)
     {
-        _loadingSessions = true;
-        try
-        {
-            string active = _assistant.ActiveSessionId;
-            _sessionList.Items.Clear();
-            foreach (OverlaySessionInfo session in _assistant.ListSessions())
-            {
-                SessionListItem item = new(session);
-                _sessionList.Items.Add(item);
-                if (session.Id.Equals(active, StringComparison.OrdinalIgnoreCase))
-                    _sessionList.SelectedItem = item;
-            }
-        }
-        finally
-        {
-            _loadingSessions = false;
-        }
-        if (!preserveTranscript)
-            LoadCurrentConversation();
+        _conversation.Post(new { type = "sessions", sessions = _assistant.ListSessions(), active = _assistant.ActiveSessionId });
+        if (!preserveTranscript) LoadCurrentConversation();
     }
 
     private void LoadCurrentConversation()
     {
-        _conversation.ClearMessages();
-        IReadOnlyList<ConversationTurn> turns = _assistant.GetCurrentTurns();
-        if (turns.Count == 0)
-        {
-            AppendMessage("Terra Agent", "# 新对话\n我是一个带本地技能的 Terraria Agent。你可以问进度、Boss、装备和配方，也可以说“帮我找魔镜在哪个箱子”或“带我去微光湖”。命中位置后，收起窗口即可跟随悬浮球箭头导航。", Color.FromArgb(166, 132, 255));
-            return;
-        }
-
-        foreach (ConversationTurn turn in turns.TakeLast(_visibleHistoryTurns))
-        {
-            AppendMessage("你", turn.Question, Accent, turn.CreatedUtc);
-            if (turn.AgentTraces.Count > 0)
-            {
-                foreach (ConversationAgentTrace trace in turn.AgentTraces)
-                    AppendAgentTrace(trace);
-            }
-            else
-            {
-                foreach (ConversationToolTrace trace in turn.ToolTraces)
-                {
-                    AppendMessage(
-                        trace.IsError ? "技能失败" : "Agent 技能",
-                        (trace.IsError ? "⚠ " : "✓ ") + trace.DisplayName + "：" + trace.Summary,
-                        trace.IsError ? Color.Salmon : Color.FromArgb(126, 218, 190),
-                        trace.CreatedUtc);
-                }
-            }
-            AppendMessage("Terra Agent", RemoveReferenceMarkers(turn.Answer), Color.FromArgb(166, 132, 255), turn.CreatedUtc);
-        }
-        _conversation.ShowLatestAfterLayout();
+        _conversation.Post(new { type = "history", turns = _assistant.GetCurrentTurns().TakeLast(_visibleHistoryTurns).ToList() });
     }
 
-    private void AppendAgentTrace(ConversationAgentTrace trace)
+    private void SwitchSession(string id)
     {
-        switch (trace.Kind)
-        {
-            case "reasoning":
-                string retry = trace.Attempt > 1 ? $" · 重试 {trace.Attempt}" : "";
-                AppendMessage(
-                    "模型思考",
-                    $"▸ 第 {trace.Step} 步{retry}思考已完成",
-                    Color.FromArgb(132, 124, 166),
-                    trace.CreatedUtc);
-                break;
-            case "tool_call":
-                AppendMessage("Agent 技能",
-                    $"第 {trace.Step} 步 · {trace.DisplayName} · {CompactArguments(trace.Arguments)}",
-                    Color.FromArgb(135, 190, 178), trace.CreatedUtc);
-                break;
-            case "tool_result":
-                AppendMessage(
-                    trace.IsError ? "技能未完成" : "技能结果",
-                    $"第 {trace.Step} 步 · {trace.Summary}",
-                    trace.IsError ? Color.Salmon : Color.FromArgb(126, 218, 190),
-                    trace.CreatedUtc);
-                break;
-        }
-    }
-
-    private static string CompactArguments(string json)
-    {
-        try
-        {
-            using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
-            string compact = System.Text.Json.JsonSerializer.Serialize(document.RootElement);
-            return compact.Length <= 72 ? compact : compact[..72] + "…";
-        }
-        catch
-        {
-            string compact = json.Replace('\r', ' ').Replace('\n', ' ').Trim();
-            return compact.Length <= 72 ? compact : compact[..72] + "…";
-        }
-    }
-
-    private static string RemoveReferenceMarkers(string answer) =>
-        System.Text.RegularExpressions.Regex.Replace(
-            answer,
-            @"\s*\[\d{1,2}\](?:\([^\r\n)]*\))?",
-            "",
-            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-
-    private void SwitchSession()
-    {
-        if (_loadingSessions || _busy || _sessionList.SelectedItem is not SessionListItem item)
-            return;
-        if (_assistant.ResumeSession(item.Session.Id))
-        {
-            ShowConversation();
-            LoadCurrentConversation();
-            RefreshStatus();
-        }
+        if (_busy) return;
+        _drafts[_assistant.ActiveSessionId] = _draft;
+        if (!_assistant.ResumeSession(id)) return;
+        _draft = _drafts.GetValueOrDefault(_assistant.ActiveSessionId, "");
+        _conversation.SetDraft(_draft);
+        ShowConversation(); RefreshSessions(); RefreshStatus();
     }
 
     private void CreateNewSession()
     {
-        if (_busy)
-            return;
-        string previousSession = _assistant.ActiveSessionId;
-        string nextSession = _assistant.NewSession();
-        if (previousSession != nextSession) _input.Clear();
-        ShowConversation();
-        RefreshSessions();
-        RefreshStatus();
-        _input.Focus();
-    }
-
-    private void DeleteSelectedSession()
-    {
-        if (_busy || _sessionList.SelectedItem is not SessionListItem item)
-            return;
-        if (MessageBox.Show(this, $"确定删除会话“{item.Session.Title}”？", "删除对话", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            return;
-        _assistant.DeleteSession(item.Session.Id);
-        RefreshSessions();
-        RefreshStatus();
-    }
-
-    private void ClearAllHistory()
-    {
-        if (_busy || MessageBox.Show(this, "确定清空全部对话历史？此操作无法撤销。", "清空历史", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            return;
-        int turns = _assistant.ClearAllHistory();
-        RefreshSessions();
-        _status.Text = $"已清空 {turns} 轮对话历史。";
+        if (_busy) return;
+        string previous = _assistant.ActiveSessionId;
+        _drafts[previous] = _draft;
+        string next = _assistant.NewSession();
+        if (previous != next) { _draft = _drafts.GetValueOrDefault(next, ""); _conversation.SetDraft(_draft); }
+        ShowConversation(); RefreshSessions(); RefreshStatus(); _conversation.FocusInput();
     }
 
     private void OpenSettings(int tab = 0)
     {
-        if (_settingsWindow is { IsDisposed: false })
-        {
-            _settingsWindow.SelectTab(tab);
-            if (!_settingsWindow.Visible)
-                _settingsWindow.Show(this);
-            _settingsWindow.WindowState = FormWindowState.Normal;
-            _settingsWindow.BringToFront();
-            _settingsWindow.Activate();
-            return;
-        }
-
-        _settingsWindow = new AssistantSettingsForm(_assistant, tab)
-        {
-            TopMost = true
-        };
-        _settingsWindow.FormClosed += (_, _) =>
-        {
-            _settingsWindow = null;
-            RefreshStatus();
-        };
-        _settingsWindow.Show(this);
-        _settingsWindow.BringToFront();
-        _settingsWindow.Activate();
-        RefreshStatus();
+        Expand(); _features.Show("settings", tab); RefreshStatus();
     }
 
-    private void AppendMessage(string sender, string text, Color color, DateTime? timestamp = null) =>
-        _conversation.AppendMessage(sender, text, color, timestamp);
+    private void ApplyAppearance(bool dark)
+    {
+        _darkMode = dark;
+        Color background = dark ? Color.FromArgb(21, 21, 23) : Color.White;
+        BackColor = _expandedPanel.BackColor = _contentHost.BackColor = background;
+        _ballMenu.Renderer = new OverlayMenuRenderer(dark);
+        if (_trayIcon.ContextMenuStrip is { } menu) menu.Renderer = new OverlayMenuRenderer(dark);
+        _ = _wiki.ApplyThemeAsync(dark);
+        _ball.Invalidate();
+    }
 
     private void RefreshStatus()
     {
-        string key = _assistant.HasKey(out _) ? "Key 已就绪" : "未配置 Key";
-        string gameData = !_assistant.Settings.GameContextSelection.HasAny
-            ? "游戏技能无权限"
-            : _assistant.Settings.IncludeMemoryContext ? "游戏技能按需可用" : "游戏技能已关闭";
-        _status.Text = $"{key} · {DeepSeekClient.ModelName} · {gameData} · 会话 {_assistant.ActiveSessionId} · Ctrl+Shift+T";
-        _usage.Text = ShortUsage(_assistant.UsageSummary);
-        _toolTip.SetToolTip(_usage, _assistant.UsageSummary);
-        _toolTip.SetToolTip(_status, _status.Text);
+        _conversation.Post(new { type = "info", hasKey = _assistant.HasKey(out _),
+            status = DeepSeekClient.ModelName + " · Ctrl+Shift+T", usage = ShortUsage(_assistant.UsageSummary) });
     }
 
-    private void NextNavigationTarget()
-    {
-        if (_assistant.NextNavigationTarget())
-        {
-            NavigationSnapshot navigation = _assistant.Navigation;
-            _agentActivity.Text = NavigationStatusText(navigation);
-            Invalidate();
-        }
-        else
-        {
-            _agentActivity.Text = _assistant.Navigation.Active ? "● 导航只有一个目标" : "● 当前没有导航目标";
-        }
-    }
-
-    private void StopNavigation()
-    {
-        _assistant.StopNavigation();
-        _stopNavigationButton.Visible = false;
-        _agentActivity.Text = "● 导航已停止  ·  Agent 已就绪";
-        _agentActivity.ForeColor = Color.FromArgb(126, 218, 190);
-        Invalidate();
-    }
+    private void NextNavigationTarget() { _assistant.NextNavigationTarget(); _ball.Invalidate(); }
+    private void StopNavigation() { _assistant.StopNavigation(); _ball.Invalidate(); }
 
     private static string NavigationStatusText(NavigationSnapshot navigation)
     {
@@ -1138,13 +501,8 @@ internal sealed class FloatingAssistantForm : Form
     private void SetBusy(bool busy)
     {
         _busy = busy;
-        _cancelButton.Visible = busy;
-        _sendButton.Enabled = !busy && _input.TextLength is > 0 and <= 2000;
-        _sendButton.Text = busy ? "执行中…" : "发送  ↑";
-        _newSessionButton.Enabled = !busy;
-        _deleteSessionButton.Enabled = !busy;
-        _sessionList.Enabled = !busy;
-        Invalidate();
+        _conversation.Post(new { type = "busy", value = busy });
+        _ball.Invalidate();
     }
 
     private void Expand()
@@ -1178,60 +536,14 @@ internal sealed class FloatingAssistantForm : Form
             Activate();
             BringToFront();
         }
-        if (_worldSearch.Visible) _worldSearch.FocusSearch();
-        else if (_encyclopedia.Visible) _encyclopedia.FocusSearch();
-        else if (_quickReference.Visible) _quickReference.FocusSearch();
-        else _input.Focus();
+        _conversation.FocusInput();
         Invalidate();
     }
 
-    private void ShowEncyclopedia()
-    {
-        Expand();
-        _conversationArea.Visible = false;
-        _worldSearch.Visible = false;
-        _quickReference.Visible = false;
-        _encyclopedia.Visible = true;
-        _encyclopedia.BringToFront();
-        if (_quickReferenceButton is not null)
-            _quickReferenceButton.BackColor = Color.FromArgb(43, 67, 90);
-        _encyclopedia.Start();
-    }
-
-    private void ShowQuickReference()
-    {
-        Expand();
-        _conversationArea.Visible = false;
-        _worldSearch.Visible = false;
-        _encyclopedia.Visible = false;
-        _quickReference.Visible = true;
-        _quickReference.BringToFront();
-        if (_quickReferenceButton is not null)
-            _quickReferenceButton.BackColor = Color.FromArgb(43, 67, 90);
-        _quickReference.FocusSearch();
-    }
-
-    private void ShowConversation()
-    {
-        _conversationArea.Visible = true;
-        _worldSearch.Visible = false;
-        _quickReference.Visible = false;
-        _encyclopedia.Visible = false;
-        if (_quickReferenceButton is not null)
-            _quickReferenceButton.BackColor = Surface;
-        if (!_collapsed) _input.Focus();
-    }
-
-    private void ShowWorldSearch()
-    {
-        Expand();
-        _conversationArea.Visible = false;
-        _quickReference.Visible = false;
-        _encyclopedia.Visible = false;
-        _worldSearch.Visible = true;
-        _worldSearch.BringToFront();
-        _worldSearch.FocusSearch();
-    }
+    private void ShowEncyclopedia() { Expand(); _features.Show("wiki"); }
+    private void ShowQuickReference() { Expand(); _features.Show("reference"); }
+    private void ShowConversation() { _features.Show("chat"); if (!_collapsed) _conversation.FocusInput(); }
+    private void ShowWorldSearch() { Expand(); _features.Show("locator"); }
 
     private void ApplyExpandedRegion()
     {
@@ -1248,33 +560,6 @@ internal sealed class FloatingAssistantForm : Form
         previous?.Dispose();
     }
 
-    private Button MakePromptChip(string text, string prompt)
-    {
-        Button button = new()
-        {
-            Text = text,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Height = 27,
-            Padding = new Padding(9, 1, 9, 1),
-            Margin = new Padding(0, 0, 7, 0),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(34, 42, 57),
-            ForeColor = Color.FromArgb(181, 198, 220),
-            Font = new Font("Microsoft YaHei UI", 8.2f),
-            Cursor = Cursors.Hand
-        };
-        button.FlatAppearance.BorderColor = Color.FromArgb(62, 77, 101);
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(47, 59, 79);
-        button.Click += (_, _) =>
-        {
-            _input.Text = prompt;
-            _input.SelectionStart = _input.TextLength;
-            _input.Focus();
-        };
-        return button;
-    }
-
     private void ToggleMaximize()
     {
         Rectangle area = Screen.FromControl(this).WorkingArea;
@@ -1284,22 +569,10 @@ internal sealed class FloatingAssistantForm : Form
         {
             if (restore) Bounds = _beforeMaximize;
             else { _beforeMaximize = Bounds; Bounds = area; }
-            if (_maximizeButton is not null) _maximizeButton.Text = restore ? "□" : "❐";
         }
         finally { ResumeLayout(true); }
         _expandedPanel.PerformLayout();
-        _bodyLayout.PerformLayout();
         _contentHost.PerformLayout();
-    }
-
-    private void UpdateInputCounter()
-    {
-        int count = _input.TextLength;
-        _inputCounter.Text = $"{count} / 2000";
-        _inputCounter.ForeColor = count > 2000
-            ? Color.Salmon
-            : count > 1750 ? Color.FromArgb(255, 205, 128) : Color.FromArgb(125, 140, 164);
-        _sendButton.Enabled = !_busy && count is > 0 and <= 2000;
     }
 
     private void Collapse()
@@ -1318,86 +591,8 @@ internal sealed class FloatingAssistantForm : Form
     }
 
 
-    private void BeginDrag()
-    {
-        _dragging = true;
-        _dragMoved = false;
-        _dragStart = Cursor.Position;
-        _formStart = Location;
-        Capture = true;
-    }
-
-    private void ContinueDrag()
-    {
-        if (!_dragging)
-            return;
-        Point delta = new(Cursor.Position.X - _dragStart.X, Cursor.Position.Y - _dragStart.Y);
-        if (Math.Abs(delta.X) + Math.Abs(delta.Y) > 4)
-            _dragMoved = true;
-        Location = new Point(_formStart.X + delta.X, _formStart.Y + delta.Y);
-    }
-
-    private bool EndDrag()
-    {
-        bool wasClick = _dragging && !_dragMoved;
-        _dragging = false;
-        Capture = false;
-        return wasClick;
-    }
-
     private static Point ClampLocation(Point point, Rectangle area, Size size) => new(
         Math.Clamp(point.X, area.Left, Math.Max(area.Left, area.Right - size.Width)),
         Math.Clamp(point.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)));
 
-    private static Button MakeHeaderButton(string text, int width)
-    {
-        Button button = new()
-        {
-            Text = text,
-            Width = width,
-            Height = 40,
-            Margin = new Padding(2, 0, 2, 0),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Color.White,
-            BackColor = Surface,
-            Font = new Font("Microsoft YaHei UI", 9.5f),
-            TextAlign = ContentAlignment.MiddleCenter
-        };
-        button.FlatAppearance.BorderSize = 0;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(60, 70, 92);
-        return button;
-    }
-
-    private static void StyleSidebarButton(Button button, int width, Color backColor, Color foreColor)
-    {
-        button.Width = width;
-        button.Height = 34;
-        button.Margin = new Padding(0, 0, 8, 0);
-        button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderSize = 0;
-        button.BackColor = backColor;
-        button.ForeColor = foreColor;
-        button.Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold);
-    }
-
-    private static Button MakeSidebarWideButton(string text)
-    {
-        Button button = new()
-        {
-            Text = text,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Surface,
-            ForeColor = Muted,
-            Font = new Font("Microsoft YaHei UI", 9f)
-        };
-        button.FlatAppearance.BorderColor = Color.FromArgb(65, 76, 96);
-        return button;
-    }
-
-    private sealed class SessionListItem
-    {
-        public SessionListItem(OverlaySessionInfo session) => Session = session;
-        public OverlaySessionInfo Session { get; }
-        public override string ToString() => Session.Title;
-    }
 }

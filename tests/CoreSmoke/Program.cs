@@ -81,6 +81,7 @@ internal static class Program
             await RunUnlimitedAgentCancellationTests();
             await RunAgentLengthRecoveryTest();
             await RunTransportAndNavigationTests();
+            await StreamingChecks.Run(temporaryDirectory);
             if (Array.Exists(args, argument => argument == "--offline")) return 0;
             if (Array.Exists(args, argument => argument == "--agent-knowledge-live"))
                 await RunLiveAgentKnowledgeTest(temporaryDirectory);
@@ -317,17 +318,26 @@ internal static class Program
         File.WriteAllText(Path.Combine(settingsDirectory, "settings-v1.json"),
             "{\"SchemaVersion\":2,\"IncludeMemoryContext\":false}");
         OverlaySettingsStore settingsStore = new(settingsDirectory);
-        if (settingsStore.Current.SchemaVersion != 8 || !settingsStore.Current.IncludeMemoryContext
+        if (settingsStore.Current.SchemaVersion != 9 || !settingsStore.Current.IncludeMemoryContext
             || !settingsStore.Current.EnableStorageLocator || !settingsStore.Current.EnableBiomeLocator
             || settingsStore.Current.MaxOutputTokens != 0 || !settingsStore.Current.EnableThinking)
             throw new InvalidOperationException("旧设置没有迁移为默认实时内存读取。");
         string migratedSettings = File.ReadAllText(Path.Combine(settingsDirectory, "settings-v1.json"));
-        if (!migratedSettings.Contains("\"SchemaVersion\": 8", StringComparison.Ordinal)
+        if (!migratedSettings.Contains("\"SchemaVersion\": 9", StringComparison.Ordinal)
             || !migratedSettings.Contains("\"IncludeMemoryContext\": true", StringComparison.Ordinal)
             || !migratedSettings.Contains("\"EnableStorageLocator\": true", StringComparison.Ordinal)
             || !migratedSettings.Contains("\"EnableBiomeLocator\": true", StringComparison.Ordinal)
             || migratedSettings.Contains("\"GameContextSelection\"", StringComparison.Ordinal))
             throw new InvalidOperationException("实时内存默认设置没有持久化。");
+
+        File.WriteAllText(Path.Combine(settingsDirectory, "settings-v1.json"),
+            "{\"SchemaVersion\":8,\"IncludeMemoryContext\":false,\"EnableStorageLocator\":false,\"ThemeMode\":\"invalid\"}");
+        OverlaySettingsStore appearance = new(settingsDirectory);
+        if (appearance.Current.ThemeMode != "system" || appearance.Current.IncludeMemoryContext || appearance.Current.EnableStorageLocator)
+            throw new InvalidOperationException("主题迁移改动了已有权限或接受了无效主题。");
+        appearance.Current.ThemeMode = "dark"; appearance.Save();
+        if (new OverlaySettingsStore(settingsDirectory).Current.ThemeMode != "dark")
+            throw new InvalidOperationException("夜间主题未能保存并恢复。");
 
         ConversationStore history = new(temporaryDirectory);
         history.AddTurn("问题一", "回答一", Array.Empty<string>(), true, 30);

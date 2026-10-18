@@ -14,6 +14,12 @@ internal static class NativeMethods
     internal const uint PwRenderFullContent = 2;
 
     [DllImport("user32.dll")]
+    internal static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint virtualKey);
 

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Terra Agent</title>
+    <link rel="stylesheet" href="vendor/base.css" />
+    <link rel="stylesheet" href="vendor/design-platform.css" />
+    <link rel="stylesheet" href="chat.css" />
+    <link rel="stylesheet" href="features.css" />
+    <script defer src="vendor/marked.js"></script>
+    <script defer src="vendor/purify.js"></script>
+    <script defer src="chat.js"></script>
+    <script defer src="features.js"></script>
+  </head>
+  <body>
+    <script src="theme-boot.js"></script>
+    <aside id="sidebar">
+      <div class="brand">
+        <span class="brand-symbol">T</span><strong>Terra Agent</strong
+        ><button
+          class="icon"
+          data-action="sidebar"
+          title="收起侧栏"
+          data-icon="sidebar"
+        ></button>
+      </div>
+      <button class="new-chat" data-action="newSession">
+        <span data-icon="plus"></span>新对话<kbd>Ctrl N</kbd>
+      </button>
+      <label class="session-search"
+        ><span data-icon="search"></span
+        ><input
+          id="session-search"
+          placeholder="搜索对话"
+          aria-label="搜索对话"
+      /></label>
+      <div class="section-label">最近对话</div>
+      <nav id="sessions" aria-label="对话历史"></nav>
+      <div class="sidebar-bottom">
+        <button class="nav-button" data-action="wiki">
+          <span data-icon="book"></span>Terraria 在线图鉴
+        </button>
+        <button class="nav-button" data-action="locator">
+          <span data-icon="locate"></span>查找与导航
+        </button>
+        <button class="nav-button" data-action="reference">
+          <span data-icon="compass"></span>常用速查
+        </button>
+        <button class="nav-button" data-action="settings">
+          <span data-icon="settings"></span>设置<span
+            id="key-dot"
+            class="dot"
+          ></span>
+        </button>
+        <div class="sidebar-caption">Terraria 游戏助手 <span>1.4</span></div>
+      </div>
+    </aside>
+    <main>
+      <header id="titlebar">
+        <button
+          class="icon"
+          id="show-sidebar"
+          data-action="sidebar"
+          title="展开侧栏"
+          data-icon="sidebar"
+        ></button>
+        <div id="session-title">新对话</div>
+        <div class="header-actions">
+          <button class="quiet" id="trajectory" title="查看完整调用轨迹">
+            <span data-icon="activity"></span>调用轨迹
+          </button>
+          <button
+            class="icon"
+            id="theme"
+            title="切换主题"
+            data-icon="sun"
+          ></button>
+          <button
+            class="icon"
+            id="more"
+            title="更多操作"
+            data-icon="more"
+            aria-expanded="false"
+          ></button>
+          <span class="window-divider"></span>
+          <button
+            class="icon"
+            data-action="collapse"
+            title="收起为悬浮球"
+            data-icon="minus"
+          ></button>
+          <button
+            class="icon"
+            data-action="maximize"
+            title="放大或还原"
+            data-icon="maximize"
+          ></button>
+          <button
+            class="icon close-window"
+            data-action="close"
+            title="关闭"
+            data-icon="close"
+          ></button>
+        </div>
+      </header>
+      <div id="menu" class="menu" hidden>
+        <button data-action="older">加载更早的对话</button>
+        <button data-action="clearCache">清理检索缓存</button>
+        <button id="delete-session">删除当前对话</button>
+        <button id="clear-history">清空全部历史</button>
+      </div>
+      <section id="feature-view" hidden aria-label="功能页面"></section>
+      <div class="workspace">
+        <section id="viewport" aria-label="对话内容" tabindex="0">
+          <div id="timeline"></div>
+        </section>
+        <div id="welcome">
+          <div class="welcome-mark">T</div>
+          <h1>今天想在泰拉瑞亚做什么？</h1>
+          <p>聊聊冒险计划，或让 Agent 帮你查看装备、查找物品。</p>
+        </div>
+        <button
+          id="latest"
+          class="icon"
+          title="回到最新消息"
+          data-icon="down"
+          hidden
+        ></button>
+        <div id="navigation" hidden>
+          <span data-icon="locate"></span><span id="navigation-text"></span
+          ><button data-action="nextTarget">下一个</button
+          ><button data-action="stopNavigation">停止导航</button>
+        </div>
+        <div id="composer-wrap">
+          <div id="request-notice" role="status" hidden></div>
+          <div id="composer">
+            <textarea
+              id="input"
+              rows="2"
+              maxlength="2000"
+              placeholder="向 Terra Agent 提问"
+              aria-label="向 Terra Agent 提问"
+            ></textarea>
+            <div class="composer-toolbar">
+              <label class="screenshot" title="附带当前 Terraria 窗口截图"
+                ><input type="checkbox" id="screenshot" /><span
+                  data-icon="image"
+                ></span
+                ><span>游戏截图</span></label
+              >
+              <span class="model-name"
+                ><span class="model-dot"></span>DeepSeek<span class="model-mode"
+                  >深度思考</span
+                ></span
+              >
+              <span class="composer-spacer"></span><span id="counter"></span>
+              <button
+                id="send"
+                class="send"
+                title="发送消息"
+                data-icon="up"
+                aria-label="发送消息"
+                disabled
+              ></button>
+            </div>
+          </div>
+          <div id="suggestions">
+            <button
+              data-prompt="结合我当前的世界进度和装备，我下一步最适合做什么？"
+            >
+              <span data-icon="compass"></span>下一步做什么
+            </button>
+            <button
+              data-prompt="读取我当前的装备并分析配装问题，给出最优先的改进建议。"
+            >
+              <span data-icon="shield"></span>分析当前装备
+            </button>
+            <button data-prompt="帮我查找魔镜放在哪个箱子。">
+              <span data-icon="search"></span>查找箱中物品
+            </button>
+            <button data-prompt="带我去当前世界的微光湖。">
+              <span data-icon="locate"></span>探索世界
+            </button>
+          </div>
+          <footer>
+            <span id="connection">正在连接本地助手…</span
+            ><button id="usage" data-action="usage" title="查看用量"></button
+            ><span class="shortcut">Enter 发送 · Shift Enter 换行</span>
+          </footer>
+        </div>
+      </div>
+    </main>
+    <dialog id="confirm">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-description"></p>
+      <div>
+        <button id="confirm-cancel">取消</button
+        ><button id="confirm-ok">删除</button>
+      </div>
+    </dialog>
+  </body>
+</html>

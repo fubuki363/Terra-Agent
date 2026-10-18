@@ -35,6 +35,11 @@ internal sealed class ConversationStore
     {
         _path = Path.Combine(dataDirectory, "history-v1.json");
         _data = Load();
+        foreach (ConversationTurn turn in _data.Sessions.SelectMany(session => session.Turns).Where(turn => turn.Status == "running"))
+        {
+            turn.Status = "cancelled";
+            turn.Notice = "上次运行已中断";
+        }
         EnsureActiveSession();
         MergeEmptySessions();
     }
@@ -62,7 +67,8 @@ internal sealed class ConversationStore
             int characters = 0;
             foreach (ConversationTurn turn in ActiveSession.Turns.AsEnumerable().Reverse())
             {
-                int length = turn.Question.Length + turn.Answer.Length;
+                int length = turn.Question.Length + turn.Answer.Length
+                    + turn.AgentTraces.Sum(trace => trace.Content.Length + trace.Arguments.Length);
                 if (selected.Count >= maximumTurns || (selected.Count > 0 && characters + length > maximumCharacters))
                     break;
                 selected.Add(turn);
@@ -93,7 +99,10 @@ internal sealed class ConversationStore
         int retentionDays,
         IEnumerable<ConversationToolTrace>? toolTraces = null,
         IEnumerable<ConversationAgentTrace>? agentTraces = null,
-        string? reasoningContent = null)
+        string? reasoningContent = null,
+        string status = "completed",
+        string notice = "",
+        long durationMilliseconds = 0)
     {
         lock (_sync)
         {
@@ -104,10 +113,13 @@ internal sealed class ConversationStore
             {
                 Question = question,
                 Answer = answer,
+                Status = status,
+                Notice = notice,
+                DurationMilliseconds = durationMilliseconds,
                 ReasoningContent = reasoningContent ?? "",
                 Sources = sources.Take(8).ToList(),
-                ToolTraces = toolTraces?.Take(8).ToList() ?? new List<ConversationToolTrace>(),
-                AgentTraces = agentTraces?.Take(64).ToList() ?? new List<ConversationAgentTrace>(),
+                ToolTraces = toolTraces?.ToList() ?? new List<ConversationToolTrace>(),
+                AgentTraces = agentTraces?.ToList() ?? new List<ConversationAgentTrace>(),
                 CreatedUtc = DateTime.UtcNow
             });
             session.UpdatedUtc = DateTime.UtcNow;
@@ -134,6 +146,24 @@ internal sealed class ConversationStore
             if (persist)
                 Save();
             return session.Id[..8];
+        }
+    }
+
+    public void SaveTurn(ConversationTurn turn, bool persist, int retentionDays)
+    {
+        lock (_sync)
+        {
+            ConversationSession session = ActiveSession;
+            int index = session.Turns.FindIndex(existing => existing.Id == turn.Id);
+            if (index < 0)
+            {
+                if (session.Turns.Count == 0) session.Title = MakeTitle(turn.Question);
+                session.Turns.Add(turn);
+            }
+            else session.Turns[index] = turn;
+            session.UpdatedUtc = DateTime.UtcNow;
+            Prune(retentionDays);
+            if (persist) Save();
         }
     }
 

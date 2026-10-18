@@ -7,7 +7,8 @@ namespace TerraWikiOverlay;
 
 internal sealed class OverlaySettings
 {
-    public int SchemaVersion { get; set; } = 8;
+    public int SchemaVersion { get; set; } = 9;
+    public string ThemeMode { get; set; } = "system";
     public bool PersistHistory { get; set; } = true;
     // Kept so existing settings-v1.json files continue to deserialize cleanly.
     public bool IncludeSaveContext { get; set; } = true;
@@ -89,7 +90,8 @@ internal sealed class OverlaySettingsStore
             settings.EnableBiomeLocator = true;
         }
         if (settings.SchemaVersion < 8) settings.EnableObjectLocator = true;
-        settings.SchemaVersion = 8;
+        settings.SchemaVersion = 9;
+        if (settings.ThemeMode is not ("light" or "dark" or "system")) settings.ThemeMode = "system";
         settings.ContextTurns = Math.Clamp(settings.ContextTurns, 0, 20);
         settings.ContextCharacterBudget = Math.Clamp(settings.ContextCharacterBudget, 1000, 50000);
         settings.HistoryRetentionDays = Math.Clamp(settings.HistoryRetentionDays, 1, 365);

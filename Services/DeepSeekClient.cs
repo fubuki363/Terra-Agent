@@ -11,6 +11,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace TerraWikiAI.Services;
 
@@ -122,13 +123,16 @@ internal sealed class DeepSeekClient : IDisposable
         CancellationToken token,
         Action<AgentToolEvent>? toolProgress = null,
         Action<AgentReasoningEvent>? reasoningProgress = null,
-        string? imageDataUrl = null)
+        string? imageDataUrl = null,
+        Action<AgentStreamEvent>? streamProgress = null,
+        Action<int, string>? assistantProgress = null)
     {
         List<object> messages = CreateSystemMessages();
         messages.Add(new
         {
             role = "system",
             content = "你运行在一个带本地技能的 Agent Harness 中。游戏技能是按需只读工具，不是每轮自动附加的提示词。" +
+                      "先理解问题，再自主决定是否检索资料或调用游戏工具。涉及精确配方、数值、掉率和版本差异时主动用 search_terraria_knowledge 核验；闲聊和不依赖资料的问题可以直接回答。可以先简短告知正在做什么，再调用工具，取得结果后继续，直到问题解决或用户停止。" +
                       "只有问题依赖玩家此刻的角色、背包、装备、世界、进度或成就时才调用；一般百科、配方、机制或纯攻略问题不要调用。" +
                       "每次只请求回答所必需的最小 categories。例如配装评价通常请求 equipment，缺少消耗品信息时再请求 inventory；不要习惯性请求全部类别。" +
                       "用户询问箱内库存时调用 find_item_in_storage；查群系用 locate_biome；查矿物、特定宝箱、家具、制作站、植物、装饰、背景墙、生命水晶、生命果、花苞等地图物体用 locate_world_object，其目录由本机游戏数据生成，示例不是白名单。材质和箱种有要求时请使用完整名称。玩家说世纪之花孢子但要找召唤地点时按花苞查询并说明正式名称；若问战斗中的孢子则查询机制。用户取消/切换导航用 control_navigation。需要核对名称或机制时用 search_terraria_knowledge。" +
@@ -138,16 +142,7 @@ internal sealed class DeepSeekClient : IDisposable
         });
         foreach (ConversationTurn turn in contextTurns)
         {
-            if (!string.IsNullOrWhiteSpace(turn.Question) && !string.IsNullOrWhiteSpace(turn.Answer))
-            {
-                messages.Add(new { role = "user", content = turn.Question });
-                messages.Add(new
-                {
-                    role = "assistant",
-                    content = turn.Answer,
-                    reasoning_content = string.IsNullOrWhiteSpace(turn.ReasoningContent) ? null : turn.ReasoningContent
-                });
-            }
+            AppendHistoryMessages(messages, turn);
         }
         messages.Add(new { role = "user", content = BuildCurrentContent(question, wikiContext, "", imageDataUrl) });
 
@@ -162,7 +157,8 @@ internal sealed class DeepSeekClient : IDisposable
                 enableThinking,
                 token,
                 tools.Count > 0 ? tools.ApiSchemas : null,
-                "auto");
+                "auto",
+                streamProgress is null ? null : (kind, content) => streamProgress(new(step + 1, 1, kind, content)));
             token.ThrowIfCancellationRequested();
             DeepSeekMessage assistant = response.Choices.FirstOrDefault()?.Message ?? new();
             string firstReason = GetFinishReason(response);
@@ -181,7 +177,8 @@ internal sealed class DeepSeekClient : IDisposable
                     enableThinking,
                     token,
                     tools.Count > 0 ? tools.ApiSchemas : null,
-                    "auto");
+                    "auto",
+                    streamProgress is null ? null : (kind, content) => streamProgress(new(step + 1, 2, kind, content)));
                 token.ThrowIfCancellationRequested();
                 response = retry;
                 assistant = response.Choices.FirstOrDefault()?.Message ?? new();
@@ -194,6 +191,12 @@ internal sealed class DeepSeekClient : IDisposable
                         + $"推理内容长度：{firstReasoningLength}/{GetReasoningLength(retry)}。");
                 }
             }
+            if (!string.IsNullOrWhiteSpace(assistant.Content))
+                assistantProgress?.Invoke(step + 1, assistant.Content);
+            if (GetFinishReason(response) == "content_filter")
+                throw new InvalidOperationException("内容过滤器中止了本轮生成，已收到的内容已保留。");
+            if (GetFinishReason(response) == "length")
+                throw new InvalidOperationException("模型达到输出长度上限，本轮内容已保留。可继续提问。");
             if (assistant.ToolCalls.Count == 0)
             {
                 string? answer = GetAnswer(response);
@@ -233,7 +236,9 @@ internal sealed class DeepSeekClient : IDisposable
                     false,
                     "正在执行",
                     "",
-                    step + 1));
+                    step + 1,
+                    call.Id));
+                Stopwatch execution = Stopwatch.StartNew();
                 AgentToolResult result = await tools.ExecuteAsync(
                     call.Function.Name,
                     call.Function.Arguments,
@@ -257,7 +262,9 @@ internal sealed class DeepSeekClient : IDisposable
                     result.IsError,
                     result.UiSummary,
                     result.ModelContent,
-                    step + 1));
+                    step + 1,
+                    call.Id,
+                    execution.ElapsedMilliseconds));
             }
         }
     }
@@ -307,12 +314,19 @@ internal sealed class DeepSeekClient : IDisposable
         bool enableThinking,
         CancellationToken token,
         IReadOnlyList<object>? tools = null,
-        string? toolChoice = null)
+        string? toolChoice = null,
+        Action<string, string>? streamProgress = null)
     {
+        bool emitted = false;
+        Action<string, string>? observed = streamProgress is null ? null : (kind, content) =>
+        {
+            emitted = true;
+            streamProgress(kind, content);
+        };
         for (int attempt = 0; ; attempt++)
         {
-            try { return await SendTransportAsync(apiKey, messages, maxOutputTokens, enableThinking, token, tools, toolChoice); }
-            catch (Exception exception) when (attempt == 0 && !token.IsCancellationRequested
+            try { return await SendTransportAsync(apiKey, messages, maxOutputTokens, enableThinking, token, tools, toolChoice, observed); }
+            catch (Exception exception) when (attempt == 0 && !emitted && !token.IsCancellationRequested
                 && exception is HttpRequestException or IOException or TaskCanceledException)
             { await Task.Delay(700, token); }
         }
@@ -320,7 +334,7 @@ internal sealed class DeepSeekClient : IDisposable
 
     private async Task<DeepSeekResponse> SendTransportAsync(string apiKey, List<object> messages,
         int maxOutputTokens, bool enableThinking, CancellationToken token,
-        IReadOnlyList<object>? tools, string? toolChoice)
+        IReadOnlyList<object>? tools, string? toolChoice, Action<string, string>? streamProgress)
     {
         using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromMinutes(4));
@@ -330,8 +344,9 @@ internal sealed class DeepSeekClient : IDisposable
             ["model"] = ModelName,
             ["messages"] = messages,
             ["thinking"] = new { type = enableThinking ? "enabled" : "disabled" },
-            ["stream"] = false
+            ["stream"] = streamProgress is not null
         };
+        if (streamProgress is not null) payload["stream_options"] = new { include_usage = true };
         if (maxOutputTokens > 0)
             payload["max_tokens"] = maxOutputTokens;
         if (tools is { Count: > 0 })
@@ -351,7 +366,12 @@ internal sealed class DeepSeekClient : IDisposable
             throw new HttpRequestException($"DeepSeek 暂时不可用（HTTP {(int)response.StatusCode}）。");
         using Stream stream = await response.Content.ReadAsStreamAsync(token);
         DeepSeekResponse? result;
-        try { result = await JsonSerializer.DeserializeAsync<DeepSeekResponse>(stream, _jsonOptions, token); }
+        try
+        {
+            result = response.IsSuccessStatusCode && string.Equals(response.Content.Headers.ContentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase)
+                ? await ReadEventStreamAsync(stream, streamProgress, token)
+                : await JsonSerializer.DeserializeAsync<DeepSeekResponse>(stream, _jsonOptions, token);
+        }
         catch (JsonException exception)
         { throw new InvalidOperationException($"DeepSeek 响应不完整或无法解析（HTTP {(int)response.StatusCode}），请重试。", exception); }
 
@@ -368,6 +388,119 @@ internal sealed class DeepSeekClient : IDisposable
             UsageReported?.Invoke(result.Usage);
 
         return result;
+    }
+
+    // SSE events can split function names/JSON arguments across any number of chunks.
+    // Only a finished stream may enter the execution loop; partial tool calls never execute.
+    private static async Task<DeepSeekResponse> ReadEventStreamAsync(
+        Stream stream, Action<string, string>? progress, CancellationToken token)
+    {
+        using StreamReader reader = new(stream, Encoding.UTF8, true, 4096, leaveOpen: true);
+        DeepSeekResponse result = new();
+        DeepSeekChoice choice = new();
+        result.Choices.Add(choice);
+        SortedDictionary<int, DeepSeekToolCall> calls = new();
+        StringBuilder data = new();
+        bool done = false;
+        while (!done)
+        {
+            string? line = await reader.ReadLineAsync(token);
+            if (line is null) throw new IOException("DeepSeek 流式连接中断，本轮已收到的内容已保留。");
+            if (line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                if (data.Length > 0) data.Append('\n');
+                data.Append(line.AsSpan(5).TrimStart());
+            }
+            if (line.Length != 0 || data.Length == 0) continue;
+            string payload = data.ToString();
+            data.Clear();
+            if (payload.Trim() == "[DONE]") { done = true; break; }
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            if (root.TryGetProperty("error", out JsonElement error))
+                throw new InvalidOperationException("DeepSeek 请求失败：" + error.GetProperty("message").GetString());
+            if (root.TryGetProperty("id", out JsonElement id)) result.Id = id.GetString();
+            if (root.TryGetProperty("model", out JsonElement model)) result.Model = model.GetString();
+            if (root.TryGetProperty("usage", out JsonElement usage) && usage.ValueKind == JsonValueKind.Object)
+                result.Usage = usage.Deserialize<DeepSeekUsage>();
+            if (!root.TryGetProperty("choices", out JsonElement choices)) continue;
+            foreach (JsonElement item in choices.EnumerateArray())
+            {
+                if (item.TryGetProperty("index", out JsonElement index) && index.GetInt32() != 0) continue;
+                if (item.TryGetProperty("finish_reason", out JsonElement finish) && finish.ValueKind == JsonValueKind.String)
+                    choice.FinishReason = finish.GetString();
+                if (!item.TryGetProperty("delta", out JsonElement delta)) continue;
+                if (delta.TryGetProperty("reasoning_content", out JsonElement reasoning) && reasoning.ValueKind == JsonValueKind.String)
+                {
+                    choice.Message.ReasoningContent += reasoning.GetString();
+                    progress?.Invoke("reasoning", choice.Message.ReasoningContent!);
+                }
+                if (delta.TryGetProperty("content", out JsonElement content) && content.ValueKind == JsonValueKind.String)
+                {
+                    choice.Message.Content += content.GetString();
+                    progress?.Invoke("content", choice.Message.Content!);
+                }
+                if (!delta.TryGetProperty("tool_calls", out JsonElement toolCalls)) continue;
+                foreach (JsonElement fragment in toolCalls.EnumerateArray())
+                {
+                    int callIndex = fragment.GetProperty("index").GetInt32();
+                    if (!calls.TryGetValue(callIndex, out DeepSeekToolCall? call))
+                    {
+                        call = new DeepSeekToolCall();
+                        call.Function.Arguments = "";
+                        calls.Add(callIndex, call);
+                    }
+                    if (fragment.TryGetProperty("id", out JsonElement callId) && callId.ValueKind == JsonValueKind.String)
+                        call.Id += callId.GetString();
+                    if (!fragment.TryGetProperty("function", out JsonElement function)) continue;
+                    if (function.TryGetProperty("name", out JsonElement name) && name.ValueKind == JsonValueKind.String)
+                        call.Function.Name += name.GetString();
+                    if (function.TryGetProperty("arguments", out JsonElement arguments) && arguments.ValueKind == JsonValueKind.String)
+                        call.Function.Arguments += arguments.GetString();
+                }
+            }
+        }
+        if (string.IsNullOrWhiteSpace(choice.FinishReason))
+            throw new IOException("DeepSeek 流式响应缺少完成标记，本轮内容已保留。");
+        choice.Message.ToolCalls = calls.Values.ToList();
+        return result;
+    }
+
+    private static void AppendHistoryMessages(List<object> messages, ConversationTurn turn)
+    {
+        if (string.IsNullOrWhiteSpace(turn.Question)) return;
+        messages.Add(new { role = "user", content = turn.Question });
+        foreach (IGrouping<int, ConversationAgentTrace> step in turn.AgentTraces.GroupBy(trace => trace.Step))
+        {
+            List<ConversationAgentTrace> completed = step.Where(trace => trace.Kind == "tool_result" && trace.CallId.Length > 0).ToList();
+            List<ConversationAgentTrace> calls = step.Where(trace => trace.Kind == "tool_call"
+                && completed.Any(result => result.CallId == trace.CallId)).ToList();
+            if (calls.Count == 0) continue; // Older summary-only traces have no replayable call IDs.
+            messages.Add(new
+            {
+                role = "assistant",
+                content = step.LastOrDefault(trace => trace.Kind == "assistant_message")?.Content,
+                reasoning_content = step.LastOrDefault(trace => trace.Kind == "reasoning")?.Content,
+                tool_calls = calls.Select(call => new
+                {
+                    id = call.CallId, type = "function",
+                    function = new { name = call.ToolName, arguments = call.Arguments }
+                }).ToList()
+            });
+            foreach (ConversationAgentTrace call in calls)
+            {
+                ConversationAgentTrace result = completed.First(trace => trace.CallId == call.CallId);
+                messages.Add(new { role = "tool", tool_call_id = call.CallId,
+                    content = JsonSerializer.Serialize(new { ok = !result.IsError, result = result.Content }) });
+            }
+        }
+        // Interrupted turns retain their partial answer and completed tool pairs.
+        messages.Add(new
+        {
+            role = "assistant",
+            content = string.IsNullOrWhiteSpace(turn.Answer) ? "[本轮已中断：" + turn.Notice + "]" : turn.Answer,
+            reasoning_content = string.IsNullOrWhiteSpace(turn.ReasoningContent) ? null : turn.ReasoningContent
+        });
     }
 
     private static string? GetAnswer(DeepSeekResponse response)

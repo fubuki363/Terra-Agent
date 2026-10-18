@@ -98,6 +98,10 @@ internal sealed class DeepSeekUsage
 
 internal sealed class ConversationTurn
 {
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Status { get; set; } = "completed";
+    public string Notice { get; set; } = "";
+    public long DurationMilliseconds { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public string Question { get; set; } = "";
     public string Answer { get; set; } = "";
@@ -109,6 +113,8 @@ internal sealed class ConversationTurn
 
 internal sealed class ConversationAgentTrace
 {
+    public string CallId { get; set; } = "";
+    public long DurationMilliseconds { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public string Kind { get; set; } = "";
     public int Step { get; set; }

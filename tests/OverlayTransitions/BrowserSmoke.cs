@@ -20,7 +20,7 @@ internal static class BrowserSmoke
     internal static void Run(string directory)
     {
         using QuietHost host = new();
-        using FullEncyclopediaPanel panel = new(directory);
+        using WikiBrowserView panel = new(directory) { Dock = DockStyle.Fill, Visible = true };
         host.Controls.Add(panel);
         Exception? failure = null;
         bool exited = false;
@@ -45,7 +45,10 @@ internal static class BrowserSmoke
                 string dom = await core.ExecuteScriptAsync("JSON.stringify({title:document.title,images:document.images.length,tables:document.querySelectorAll('table').length,chars:document.body.innerText.length,url:location.href})");
                 Console.WriteLine("Wiki browser HTTP=" + navigation.HttpStatusCode + " document=" + JsonSerializer.Deserialize<string>(dom));
                 if (navigation.HttpStatusCode >= 400) throw new InvalidOperationException("Wiki 返回 HTTP " + navigation.HttpStatusCode + "，不能确认完整正文渲染。");
-                string png = Path.Combine("F:\\TerraMod\\Overlay\\obj\\ui-review", "wiki-live.png");
+                await panel.ApplyThemeAsync(true);
+                string theme = await core.ExecuteScriptAsync("JSON.stringify({root:document.documentElement.className,body:document.body.className,background:getComputedStyle(document.body).backgroundColor,content:document.querySelector('#content')?getComputedStyle(document.querySelector('#content')).backgroundColor:null})");
+                Console.WriteLine("Wiki night appearance=" + JsonSerializer.Deserialize<string>(theme));
+                string png = Path.Combine("F:\\TerraMod\\Overlay\\obj\\ui-review", "wiki-live-night.png");
                 Directory.CreateDirectory(Path.GetDirectoryName(png)!);
                 using FileStream stream = File.Create(png);
                 await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);

@@ -1,10 +1,11 @@
 [CmdletBinding()]
-param()
+param([string]$OutputDirectory)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $projectRoot 'Overlay\TerraWikiOverlay.csproj'
-$output = Join-Path $projectRoot 'dist\TerraWikiOverlay-single'
+$output = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) }
+    else { Join-Path $projectRoot 'dist\TerraWikiOverlay-single' }
 
 dotnet publish $project -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o $output
 if ($LASTEXITCODE -ne 0) {

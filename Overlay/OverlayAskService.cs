@@ -14,10 +14,12 @@ internal enum OverlayMessageKind
     ToolError,
     Answer,
     Source,
-    Error
+    Error,
+    Stream,
+    AssistantMessage
 }
 
-internal readonly record struct OverlayMessage(OverlayMessageKind Kind, string Text);
+internal readonly record struct OverlayMessage(OverlayMessageKind Kind, string Text, ConversationAgentTrace? Trace = null, AgentStreamEvent? Stream = null);
 internal readonly record struct OverlaySessionInfo(string Id, string Title, int TurnCount, DateTime UpdatedUtc);
 internal readonly record struct GameContextReadResult(bool Success, string Context, string Notice);
 
@@ -26,7 +28,7 @@ internal sealed class OverlayAskService : IDisposable
     private readonly ApiKeyProvider _keyProvider;
     private readonly WikiCache _cache;
     private readonly TerrariaWikiClient _wikiClient;
-    private readonly DeepSeekClient _deepSeekClient = new();
+    private readonly DeepSeekClient _deepSeekClient;
     private readonly WikiResearchService _research;
     private readonly ConversationStore _history;
     private readonly UsageTracker _usage;
@@ -38,8 +40,11 @@ internal sealed class OverlayAskService : IDisposable
     private readonly NavigationState _navigation = new();
     private int _navigationRefreshRunning;
 
-    public OverlayAskService(string? dataDirectory = null)
+    public OverlayAskService(string? dataDirectory = null) : this(dataDirectory, new DeepSeekClient()) { }
+
+    internal OverlayAskService(string? dataDirectory, DeepSeekClient client)
     {
+        _deepSeekClient = client;
         DataDirectory = dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TerraWikiOverlay");
         Directory.CreateDirectory(DataDirectory);
         string adjacentKey = Path.Combine(AppContext.BaseDirectory, "key");
@@ -147,149 +152,117 @@ internal sealed class OverlayAskService : IDisposable
         lock (_requestSync) _activeRequest = request;
         CancellationToken requestToken = request.Token;
 
+        ConversationTurn turn = new() { Question = question, Status = "running" };
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        System.Diagnostics.Stopwatch publish = System.Diagnostics.Stopwatch.StartNew();
+        System.Diagnostics.Stopwatch checkpoint = System.Diagnostics.Stopwatch.StartNew();
+        bool started = false;
+        void Save() => _history.SaveTurn(turn, Settings.PersistHistory, Settings.HistoryRetentionDays);
+        ConversationAgentTrace Upsert(string kind, int step, int attempt = 1)
+        {
+            ConversationAgentTrace? trace = turn.AgentTraces.LastOrDefault(item => item.Kind == kind && item.Step == step && item.Attempt == attempt);
+            if (trace is not null) return trace;
+            trace = new() { Kind = kind, Step = step, Attempt = attempt };
+            turn.AgentTraces.Add(trace);
+            return trace;
+        }
         try
         {
-            if (!_keyProvider.TryGetKey(out string apiKey, out string expectedPath))
-                throw new InvalidOperationException("未找到 DeepSeek API Key。请打开右上角“设置”，在 API Key 页完成配置；本地路径：" + expectedPath);
+            if (!_keyProvider.TryGetKey(out string apiKey, out _))
+                throw new InvalidOperationException("未找到 DeepSeek API Key。请打开设置，在 API Key 页面保存。");
             if (question.Contains("sk-", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("问题中检测到疑似 API Key，已阻止发送。请使用 API Key 管理窗口保存。");
-
-            IReadOnlyList<ConversationTurn> contextTurns = _history.GetContext(
-                Settings.ContextTurns,
-                Settings.ContextCharacterBudget);
-            string? previousQuestion = contextTurns.LastOrDefault()?.Question;
-
+            IReadOnlyList<ConversationTurn> context = _history.GetContext(Settings.ContextTurns, Settings.ContextCharacterBudget);
+            started = true;
+            Save();
             string? screenshot = null;
             if (attachScreenshot)
             {
-                progress.Report(new(OverlayMessageKind.Status, "正在捕获 Terraria 窗口……"));
+                progress.Report(new(OverlayMessageKind.Status, "正在捕获 Terraria 窗口…"));
                 screenshot = await Task.Run(TerrariaWindowCapture.CaptureAsDataUrl, requestToken);
             }
-
-            bool locatorQuestion = LooksLikeLocatorQuestion(question);
-            IReadOnlyList<WikiDocument> documents;
-            if (locatorQuestion)
-            {
-                progress.Report(new(OverlayMessageKind.Status, $"正在理解本地查找请求（上下文 {contextTurns.Count} 轮）……"));
-                documents = Array.Empty<WikiDocument>();
-            }
-            else
-            {
-                progress.Report(new(OverlayMessageKind.Status, $"正在理解问题并检索 Wiki 与社区（上下文 {contextTurns.Count} 轮）……"));
-                documents = await _research.SearchAsync(
-                    apiKey,
-                    question,
-                    previousQuestion,
-                    "zh",
-                    6,
-                    5200,
-                    TimeSpan.FromHours(168),
-                    requestToken);
-            }
-
-            AgentToolRegistry agentTools = GameMemoryAgentSkill.CreateRegistry(Settings);
-            WorldLocatorAgentSkills.Register(agentTools, Settings, _navigation);
-            agentTools.Register(CreateKnowledgeTool(apiKey));
-            List<ConversationToolTrace> toolTraces = new();
-            List<ConversationAgentTrace> agentTraces = new();
-            string finalReasoning = "";
-            progress.Report(new(OverlayMessageKind.Status, locatorQuestion
-                ? "Agent 正在判断是否调用本地定位技能……"
-                : documents.Count == 0
-                ? "未检索到可用资料，正在生成标注为未核验的通用建议……"
-                : screenshot is null
-                ? $"已找到 {documents.Count} 条资料，Agent 正在判断是否需要调用技能……"
-                : "Agent 正在结合资料与游戏画面，并判断是否需要调用技能……"));
+            // The model chooses retrieval and game tools in the same loop as every other tool.
+            AgentToolRegistry tools = GameMemoryAgentSkill.CreateRegistry(Settings);
+            WorldLocatorAgentSkills.Register(tools, Settings, _navigation);
+            tools.Register(CreateKnowledgeTool(apiKey));
+            progress.Report(new(OverlayMessageKind.Status, "正在思考…"));
             string answer = await _deepSeekClient.AskAgentWithHistoryAsync(
-                apiKey,
-                question,
-                BuildWikiContext(documents),
-                contextTurns,
-                agentTools,
-                0,
-                true,
-                requestToken,
+                apiKey, question, "", context, tools, 0, true, requestToken,
                 toolEvent =>
                 {
-                    agentTraces.Add(new ConversationAgentTrace
+                    if (!toolEvent.Completed) turn.Answer = "";
+                    ConversationAgentTrace trace = new()
                     {
                         Kind = toolEvent.Completed ? "tool_result" : "tool_call",
-                        Step = toolEvent.Step,
-                        ToolName = toolEvent.ToolName,
-                        DisplayName = toolEvent.DisplayName,
-                        Arguments = toolEvent.Arguments,
-                        Content = toolEvent.ResultContent,
-                        Summary = toolEvent.Summary,
-                        IsError = toolEvent.IsError,
-                        CreatedUtc = DateTime.UtcNow
-                    });
-                    if (toolEvent.Completed)
-                    {
-                        toolTraces.Add(new ConversationToolTrace
-                        {
-                            ToolName = toolEvent.ToolName,
-                            DisplayName = toolEvent.DisplayName,
-                            Arguments = toolEvent.Arguments,
-                            IsError = toolEvent.IsError,
-                            Summary = toolEvent.Summary,
-                            CreatedUtc = DateTime.UtcNow
-                        });
-                    }
-                    progress.Report(new(
-                        !toolEvent.Completed ? OverlayMessageKind.ToolCall
-                            : toolEvent.IsError ? OverlayMessageKind.ToolError
-                            : OverlayMessageKind.ToolResult,
-                        toolEvent.Completed
-                            ? FormatToolResult(toolEvent)
-                            : FormatToolCall(toolEvent)));
+                        Step = toolEvent.Step, CallId = toolEvent.CallId,
+                        ToolName = toolEvent.ToolName, DisplayName = toolEvent.DisplayName,
+                        Arguments = toolEvent.Arguments, Content = toolEvent.ResultContent,
+                        Summary = toolEvent.Summary, IsError = toolEvent.IsError,
+                        DurationMilliseconds = toolEvent.DurationMilliseconds
+                    };
+                    turn.AgentTraces.Add(trace);
+                    Save();
+                    progress.Report(new(!toolEvent.Completed ? OverlayMessageKind.ToolCall
+                        : toolEvent.IsError ? OverlayMessageKind.ToolError : OverlayMessageKind.ToolResult,
+                        toolEvent.Summary, trace));
                 },
-                reasoningEvent =>
+                reasoning =>
                 {
-                    if (!reasoningEvent.HasToolCalls
-                        && reasoningEvent.FinishReason.Equals("stop", StringComparison.OrdinalIgnoreCase))
-                        finalReasoning = reasoningEvent.Content;
-                    agentTraces.Add(new ConversationAgentTrace
+                    ConversationAgentTrace trace = Upsert("reasoning", reasoning.Step, reasoning.Attempt);
+                    trace.Content = reasoning.Content;
+                    trace.FinishReason = reasoning.FinishReason;
+                    if (!reasoning.HasToolCalls) turn.ReasoningContent = reasoning.Content;
+                    Save();
+                    progress.Report(new(OverlayMessageKind.Reasoning, reasoning.Content, trace));
+                }, screenshot,
+                stream =>
+                {
+                    ConversationAgentTrace trace = Upsert(stream.Kind == "reasoning" ? "reasoning" : "assistant_message", stream.Step, stream.Attempt);
+                    trace.Content = stream.Content;
+                    if (stream.Kind == "content") turn.Answer = stream.Content;
+                    if (checkpoint.ElapsedMilliseconds >= 1000) { Save(); checkpoint.Restart(); }
+                    // Keep UI traffic bounded while retaining the latest full snapshot for stop/error.
+                    if (publish.ElapsedMilliseconds >= 40)
                     {
-                        Kind = "reasoning",
-                        Step = reasoningEvent.Step,
-                        Attempt = reasoningEvent.Attempt,
-                        Content = reasoningEvent.Content,
-                        FinishReason = reasoningEvent.FinishReason,
-                        CreatedUtc = DateTime.UtcNow
-                    });
-                    string retryLabel = reasoningEvent.Attempt > 1 ? $" · 重试 {reasoningEvent.Attempt}" : "";
-                    progress.Report(new(
-                        OverlayMessageKind.Reasoning,
-                        $"**第 {reasoningEvent.Step} 步{retryLabel}** · 结束原因 `{reasoningEvent.FinishReason}`\n\n{reasoningEvent.Content}"));
+                        progress.Report(new(OverlayMessageKind.Stream, "", Stream: stream));
+                        publish.Restart();
+                    }
                 },
-                screenshot);
-
+                (step, content) =>
+                {
+                    turn.Answer = content;
+                    ConversationAgentTrace trace = Upsert("assistant_message", step);
+                    trace.Content = content;
+                    Save();
+                    progress.Report(new(OverlayMessageKind.AssistantMessage, content, trace));
+                });
+            turn.Answer = answer;
+            turn.Status = "completed";
             _usage.RecordQuestion();
-            _history.AddTurn(
-                question,
-                answer,
-                Array.Empty<string>(),
-                Settings.PersistHistory,
-                Settings.HistoryRetentionDays,
-                toolTraces,
-                agentTraces,
-                finalReasoning);
-
             progress.Report(new(OverlayMessageKind.Answer, answer));
         }
         catch (OperationCanceledException)
         {
+            turn.Status = "cancelled";
+            turn.Notice = "已停止生成";
             if (!_cancellation.IsCancellationRequested)
-                progress.Report(new(OverlayMessageKind.Notice, "已停止本次请求。可以修改问题后重新发送。"));
+                progress.Report(new(OverlayMessageKind.Notice, turn.Notice));
         }
         catch (Exception exception)
         {
-            progress.Report(new(OverlayMessageKind.Error, SafeError(exception.GetBaseException().Message)));
+            turn.Status = "error";
+            turn.Notice = SafeError(exception.GetBaseException().Message);
+            progress.Report(new(OverlayMessageKind.Error, turn.Notice));
         }
         finally
         {
-            lock (_requestSync) _activeRequest = null;
-            _gate.Release();
+            turn.DurationMilliseconds = elapsed.ElapsedMilliseconds;
+            try { if (started) Save(); }
+            finally
+            {
+                lock (_requestSync) _activeRequest = null;
+                _gate.Release();
+            }
         }
     }
 
@@ -322,46 +295,6 @@ internal sealed class OverlayAskService : IDisposable
             builder.AppendLine();
         }
         return builder.ToString();
-    }
-
-    private static string FormatToolCall(AgentToolEvent toolEvent) =>
-        $"**第 {toolEvent.Step} 步 · {toolEvent.DisplayName}**\n\n"
-        + $"工具：`{toolEvent.ToolName}`\n\n参数：\n```json\n{PrettyJson(toolEvent.Arguments)}\n```";
-
-    private static string FormatToolResult(AgentToolEvent toolEvent) =>
-        $"**第 {toolEvent.Step} 步 · {toolEvent.DisplayName}** — {toolEvent.Summary}\n\n"
-        + $"结果：\n```text\n{SafeFence(toolEvent.ResultContent)}\n```";
-
-    private static string PrettyJson(string json)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
-            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
-        }
-        catch
-        {
-            return SafeFence(json);
-        }
-    }
-
-    private static string SafeFence(string value) => (value ?? "").Replace("```", "` ` `", StringComparison.Ordinal);
-
-    private static bool LooksLikeLocatorQuestion(string question)
-    {
-        string[] locatorWords = { "找", "在哪", "哪里", "位置", "方位", "导航", "带我去", "where", "locate", "find" };
-        string[] localTargets =
-        {
-            "箱", "储物", "猪猪", "保险箱", "护卫熔炉", "虚空保险库",
-            "我把", "我的", "放", "存",
-            "微光", "猩红", "腐化", "丛林", "神圣", "雪原", "沙漠", "蘑菇", "地牢", "神庙", "群系",
-            "剑冢", "附魔剑神龛", "sword shrine", "sword_shrine", "enchanted sword shrine",
-            "生命果", "生命水晶", "雕像", "花苞", "孢子", "幼虫", "祭坛", "暗影珠", "猩红之心",
-            "水晶碎", "水蜡烛", "life fruit", "life crystal", "statue", "plantera bulb",
-            "矿", "家具", "桌", "椅", "床", "工作台", "熔炉", "墙", "灯", "制作站", "木材", "石块", "ore", "furniture", "chest", "bed", "chair"
-        };
-        return locatorWords.Any(word => question.Contains(word, StringComparison.OrdinalIgnoreCase))
-            && localTargets.Any(target => question.Contains(target, StringComparison.OrdinalIgnoreCase));
     }
 
     private static GameContextReadResult ReadLocalGameContext(GameContextSelection selection, bool includeMemory)

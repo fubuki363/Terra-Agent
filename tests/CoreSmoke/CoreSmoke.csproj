@@ -14,6 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="StreamingChecks.cs" />
     <Compile Include="..\..\Services\Models.cs" Link="Services\Models.cs" />
     <Compile Include="..\..\Services\ClientIdentity.cs" Link="Services\ClientIdentity.cs" />
     <Compile Include="..\..\Services\AgentTools.cs" Link="Services\AgentTools.cs" />
