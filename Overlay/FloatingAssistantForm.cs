@@ -7,7 +7,6 @@ namespace TerraWikiOverlay;
 internal sealed class FloatingAssistantForm : Form
 {
     private static readonly Color Background = Color.White;
-    private static readonly Color Accent = Color.FromArgb(65, 118, 230);
     private const int BallSize = 104;
     private const int ExpandedWidth = 1180;
     private const int ExpandedHeight = 820;
@@ -21,7 +20,7 @@ internal sealed class FloatingAssistantForm : Form
     private bool _darkMode;
     private readonly ContextMenuStrip _ballMenu = new();
     private readonly NotifyIcon _trayIcon = new();
-    private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 40 };
+    private readonly System.Windows.Forms.Timer _navigationTimer = new() { Interval = 250 };
     private Rectangle _expandedBounds;
     private Rectangle _beforeMaximize;
     private int _visibleHistoryTurns = 20;
@@ -31,7 +30,6 @@ internal sealed class FloatingAssistantForm : Form
     private string _lastNavigationUi = "";
     private bool _collapsed;
     private bool _busy;
-    private float _animationPhase;
     private DateTime _lastNavigationRefreshUtc;
 
     public FloatingAssistantForm(string? dataDirectory = null)
@@ -41,7 +39,7 @@ internal sealed class FloatingAssistantForm : Form
         _features = new HarnessFeaturesController(_assistant, _conversation);
         _wiki = new WikiBrowserView(_assistant.DataDirectory);
         _darkMode = OverlayAppearance.IsDark(_assistant.Settings.ThemeMode);
-        _ball = new FloatingBallForm(BallSize, DrawBall, Expand);
+        _ball = new FloatingBallForm(BallSize, () => new(_busy, _darkMode, _assistant.Navigation), Expand);
         Text = "Terra Agent";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = true;
@@ -61,11 +59,8 @@ internal sealed class FloatingAssistantForm : Form
         ClientSize = new Size(ExpandedWidth, ExpandedHeight);
         _expandedPanel.Visible = true;
 
-        _animationTimer.Tick += (_, _) =>
+        _navigationTimer.Tick += (_, _) =>
         {
-            _animationPhase += _busy ? 0.18f : 0.065f;
-            if (_animationPhase > MathF.Tau)
-                _animationPhase -= MathF.Tau;
             NavigationSnapshot navigation = _assistant.Navigation;
             if (navigation.Active && DateTime.UtcNow - _lastNavigationRefreshUtc > TimeSpan.FromSeconds(1.25))
             {
@@ -78,10 +73,8 @@ internal sealed class FloatingAssistantForm : Form
                 _lastNavigationUi = navigationText;
                 _conversation.Post(new { type = "navigation", active = navigation.Active, value = navigationText, count = navigation.TargetCount });
             }
-            if (_collapsed)
-                _ball.Invalidate();
         };
-        _animationTimer.Start();
+        _navigationTimer.Start();
 
         Shown += (_, _) =>
         {
@@ -162,55 +155,13 @@ internal sealed class FloatingAssistantForm : Form
         base.WndProc(ref message);
     }
 
-    private void DrawBall(Graphics graphics, Rectangle bounds)
-    {
-        int width = bounds.Width, height = bounds.Height;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        float pulse = (MathF.Sin(_animationPhase) + 1f) / 2f;
-        NavigationSnapshot navigation = _assistant.Navigation;
-        bool navigating = navigation.Active;
-        bool arrived = navigating && navigation.DistanceTiles <= 8f;
-        Color navigationColor = arrived ? Color.FromArgb(82, 232, 142) : Color.FromArgb(255, 190, 62);
-        Rectangle orb = new(10, 10, width - 21, height - 21);
-        using SolidBrush shadow = new(Color.FromArgb(_ball.Hovered ? 42 : 24, Color.Black));
-        graphics.FillEllipse(shadow, 9, 12, width - 18, height - 18);
-        using SolidBrush fill = new(navigating ? (arrived ? Color.FromArgb(44, 143, 89) : Color.FromArgb(184, 125, 30)) : (_darkMode ? Color.FromArgb(31, 33, 37) : Color.FromArgb(250, 251, 253)));
-        graphics.FillEllipse(fill, orb);
-        using Pen ring = new(navigating ? navigationColor : Color.FromArgb(217, 223, 233), _ball.Hovered ? 2f : 1f);
-        graphics.DrawEllipse(ring, orb);
-        if (_busy)
-        {
-            using Pen progress = new(Accent, 3f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            graphics.DrawArc(progress, orb, _animationPhase * 70f, 110f);
-        }
-
-        if (navigating && !_busy)
-        {
-            DrawNavigationArrow(graphics, navigation, pulse, arrived);
-            string distanceText = arrived ? "到达" : navigation.DistanceTiles >= 1000
-                ? $"{navigation.DistanceTiles / 1000f:0.#}k格"
-                : $"{navigation.DistanceTiles:0}格";
-            Rectangle distanceBounds = new(14, 70, width - 28, 20);
-            using Font distanceFont = new("Microsoft YaHei UI", 8.2f, FontStyle.Bold);
-            TextRenderer.DrawText(graphics, distanceText, distanceFont, distanceBounds, Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-        }
-        else
-        {
-            using Font font = new("Segoe UI", 22f, FontStyle.Bold, GraphicsUnit.Point);
-            TextRenderer.DrawText(graphics, _busy ? "···" : "T", font, bounds, _darkMode ? Color.FromArgb(122, 170, 255) : Accent,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-
-        }
-    }
-
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _ball.Dispose();
         WindowPlacement.Save(_assistant.DataDirectory, _collapsed ? _expandedBounds : Bounds);
         _features.Dispose();
-        _animationTimer.Stop();
-        _animationTimer.Dispose();
+        _navigationTimer.Stop();
+        _navigationTimer.Dispose();
         _assistant.Dispose();
         _ballMenu.Dispose();
         _trayIcon.Visible = false;
@@ -433,7 +384,7 @@ internal sealed class FloatingAssistantForm : Form
         _ballMenu.Renderer = new OverlayMenuRenderer(dark);
         if (_trayIcon.ContextMenuStrip is { } menu) menu.Renderer = new OverlayMenuRenderer(dark);
         _ = _wiki.ApplyThemeAsync(dark);
-        _ball.Invalidate();
+        _ball.RefreshState();
     }
 
     private void RefreshStatus()
@@ -442,8 +393,8 @@ internal sealed class FloatingAssistantForm : Form
             status = DeepSeekClient.ModelName + " · Ctrl+Shift+T", usage = ShortUsage(_assistant.UsageSummary) });
     }
 
-    private void NextNavigationTarget() { _assistant.NextNavigationTarget(); _ball.Invalidate(); }
-    private void StopNavigation() { _assistant.StopNavigation(); _ball.Invalidate(); }
+    private void NextNavigationTarget() { _assistant.NextNavigationTarget(); _ball.RefreshState(); }
+    private void StopNavigation() { _assistant.StopNavigation(); _ball.RefreshState(); }
 
     private static string NavigationStatusText(NavigationSnapshot navigation)
     {
@@ -463,35 +414,6 @@ internal sealed class FloatingAssistantForm : Form
         return (horizontal + vertical).Length == 0 ? "附近" : horizontal + vertical;
     }
 
-    private static void DrawNavigationArrow(Graphics graphics, NavigationSnapshot navigation, float pulse, bool arrived)
-    {
-        if (arrived)
-        {
-            float radius = 17f + pulse * 4f;
-            using Pen arrivedRing = new(Color.White, 5f);
-            graphics.DrawEllipse(arrivedRing, 52f - radius, 45f - radius, radius * 2f, radius * 2f);
-            using SolidBrush center = new(Color.FromArgb(230, 255, 255, 255));
-            graphics.FillEllipse(center, 47f, 40f, 10f, 10f);
-            return;
-        }
-
-        GraphicsState state = graphics.Save();
-        graphics.TranslateTransform(52f, 44f);
-        graphics.RotateTransform(navigation.AngleRadians * 180f / MathF.PI);
-        float scale = 1f + pulse * 0.08f;
-        graphics.ScaleTransform(scale, scale);
-        PointF[] arrow =
-        {
-            new(29f, 0f), new(5f, -18f), new(7f, -7f), new(-24f, -7f),
-            new(-24f, 7f), new(7f, 7f), new(5f, 18f)
-        };
-        using SolidBrush brush = new(Color.FromArgb(242, Color.White));
-        using Pen border = new(Color.FromArgb(130, 80, 40), 2f);
-        graphics.FillPolygon(brush, arrow);
-        graphics.DrawPolygon(border, arrow);
-        graphics.Restore(state);
-    }
-
     private static string ShortUsage(string summary)
     {
         var match = System.Text.RegularExpressions.Regex.Match(summary, @"今日：([\d,]+) 个问题 / ([\d,]+) 次 API / ([\d,]+) Token");
@@ -502,7 +424,7 @@ internal sealed class FloatingAssistantForm : Form
     {
         _busy = busy;
         _conversation.Post(new { type = "busy", value = busy });
-        _ball.Invalidate();
+        _ball.RefreshState();
     }
 
     private void Expand()
@@ -586,7 +508,7 @@ internal sealed class FloatingAssistantForm : Form
         _ball.Location = ClampLocation(new Point(anchor.X + Math.Max(0, _expandedBounds.Width - BallSize), anchor.Y), area, _ball.Size);
         Hide();
         if (wasVisible) _ball.Show();
-        _ball.Invalidate();
+        _ball.RefreshState();
         WindowPlacement.SaveInBackground(_assistant.DataDirectory, _expandedBounds);
     }
 

@@ -15,6 +15,8 @@ internal static class Program
         try
         {
             if (args.Contains("--browser-live")) { BrowserSmoke.Run(directory); return; }
+            FloatingBallChecks.Run(args);
+            if (args.Contains("--ball-only")) return;
             Assembly assembly = Assembly.Load("TerraWikiOverlay");
             Type type = assembly.GetType("TerraWikiOverlay.FloatingAssistantForm", throwOnError: true)!;
             form = (Form)Activator.CreateInstance(type, new object?[] { directory })!;

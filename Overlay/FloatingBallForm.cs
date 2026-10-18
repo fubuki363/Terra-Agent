@@ -1,20 +1,23 @@
+using System.Diagnostics;
+
 namespace TerraWikiOverlay;
 
-// A cached, separate window keeps the chat control tree and HWND untouched.
+// Keep this HWND cached: collapsing never rebuilds or resizes the chat's WebView.
 internal sealed class FloatingBallForm : Form
 {
-    private readonly Action<Graphics, Rectangle> _paintBall;
+    private readonly Func<FloatingBallState> _readState;
     private readonly Action _expand;
-    private bool _dragging;
-    private bool _moved;
-    private Point _mouseStart;
-    private Point _windowStart;
+    private readonly FloatingBallMotion _motion = new();
+    private readonly System.Windows.Forms.Timer _timer = new();
+    private readonly Stopwatch _clock = new();
+    private LayeredBallSurface? _surface;
+    private bool _dragging, _moved, _hovered, _reducedMotion;
+    private Point _mouseStart, _windowStart;
+    private double _previousTime;
 
-    public bool Hovered { get; private set; }
-
-    public FloatingBallForm(int size, Action<Graphics, Rectangle> paintBall, Action expand)
+    public FloatingBallForm(int size, Func<FloatingBallState> readState, Action expand)
     {
-        _paintBall = paintBall;
+        _readState = readState;
         _expand = expand;
         Text = "Terra Agent 悬浮球";
         FormBorderStyle = FormBorderStyle.None;
@@ -22,15 +25,10 @@ internal sealed class FloatingBallForm : Form
         TopMost = true;
         AutoScaleMode = AutoScaleMode.None;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(19, 23, 30);
-        DoubleBuffered = true;
         ClientSize = new Size(size, size);
         MinimumSize = MaximumSize = Size;
-        using System.Drawing.Drawing2D.GraphicsPath circle = new();
-        circle.AddEllipse(ClientRectangle);
-        Region = new Region(circle);
-        MouseEnter += (_, _) => { Hovered = true; Invalidate(); };
-        MouseLeave += (_, _) => { Hovered = false; Invalidate(); };
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+        _timer.Tick += (_, _) => RefreshState();
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -39,16 +37,73 @@ internal sealed class FloatingBallForm : Form
         get
         {
             CreateParams parameters = base.CreateParams;
-            parameters.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE: showing/dragging the ball preserves game focus.
+            parameters.ExStyle |= 0x08000000 | 0x00080000 | 0x00000080; // NOACTIVATE | LAYERED | TOOLWINDOW
             return parameters;
         }
     }
 
-    protected override void OnPaint(PaintEventArgs args)
+    protected override void OnHandleCreated(EventArgs e)
     {
-        base.OnPaint(args);
-        _paintBall(args.Graphics, ClientRectangle);
+        base.OnHandleCreated(e);
+        _surface = new LayeredBallSurface(Width, Height);
     }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        _surface?.Dispose();
+        _surface = null;
+        base.OnHandleDestroyed(e);
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible)
+        {
+            _reducedMotion = LayeredBallSurface.ReducedMotion;
+            _hovered = _dragging = _moved = false;
+            _previousTime = 0;
+            _clock.Restart();
+            _motion.Reset(_readState(), _reducedMotion);
+            RefreshState();
+            _timer.Start();
+        }
+        else
+        {
+            _timer.Stop();
+            _clock.Stop();
+            _dragging = _hovered = false;
+            Capture = false;
+        }
+    }
+
+    public void RefreshState()
+    {
+        if (!Visible || _surface is null || IsDisposed) return;
+        double now = _clock.Elapsed.TotalSeconds;
+        FloatingBallState state = _readState();
+        FloatingBallFrame frame = _motion.Advance(now - _previousTime, state, _hovered, _dragging && !_moved, _reducedMotion);
+        _previousTime = now;
+        FloatingBallRenderer.Draw(_surface.Graphics, ClientSize, frame);
+        _surface.Present(Handle, Location);
+        _timer.Interval = _reducedMotion ? 250 : state.Busy || _hovered || _dragging || _motion.Settling ? 16 : state.Navigation.Active ? 33 : 40;
+    }
+
+    protected override void OnPaint(PaintEventArgs e) { }
+    protected override void OnPaintBackground(PaintEventArgs e) { }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == 0x001A) // WM_SETTINGCHANGE: respect Windows' animation preference live.
+        {
+            _reducedMotion = LayeredBallSurface.ReducedMotion;
+            RefreshState();
+        }
+        base.WndProc(ref message);
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hovered = true; RefreshState(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hovered = false; RefreshState(); }
 
     protected override void OnMouseDown(MouseEventArgs args)
     {
@@ -59,6 +114,7 @@ internal sealed class FloatingBallForm : Form
         _mouseStart = Cursor.Position;
         _windowStart = Location;
         Capture = true;
+        RefreshState();
     }
 
     protected override void OnMouseMove(MouseEventArgs args)
@@ -67,7 +123,7 @@ internal sealed class FloatingBallForm : Form
         if (!_dragging) return;
         Point delta = new(Cursor.Position.X - _mouseStart.X, Cursor.Position.Y - _mouseStart.Y);
         _moved |= Math.Abs(delta.X) + Math.Abs(delta.Y) > 4;
-        Location = new Point(_windowStart.X + delta.X, _windowStart.Y + delta.Y);
+        if (_moved) Location = new Point(_windowStart.X + delta.X, _windowStart.Y + delta.Y);
     }
 
     protected override void OnMouseUp(MouseEventArgs args)
@@ -80,12 +136,19 @@ internal sealed class FloatingBallForm : Form
         Rectangle area = Screen.FromControl(this).WorkingArea;
         Location = new Point(Math.Clamp(Left, area.Left, Math.Max(area.Left, area.Right - Width)),
             Math.Clamp(Top, area.Top, Math.Max(area.Top, area.Bottom - Height)));
+        RefreshState();
         if (clicked) _expand();
     }
 
     protected override void OnMouseCaptureChanged(EventArgs args)
     {
         base.OnMouseCaptureChanged(args);
-        if (!Capture) _dragging = false;
+        if (!Capture) { _dragging = false; RefreshState(); }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { _timer.Dispose(); _surface?.Dispose(); _surface = null; }
+        base.Dispose(disposing);
     }
 }
