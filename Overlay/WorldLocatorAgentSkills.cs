@@ -31,7 +31,7 @@ internal static class WorldLocatorAgentSkills
     {
         Name = FindObjectToolName,
         DisplayName = "查找世界物体",
-        Description = "在当前原版 Terraria 的实时地图中逐格定位世界物体。目录结合本机物品样本、碎石机等工具的放置样式和自然拾取物映射，支持矿物、指定宝箱、家具、制作站、药草、染料植物、装饰、背景墙，以及大自然的恩赐、巨型龙蛋、友好巨石、丛林孢子、生命水晶、生命果、花苞、雕像和石中剑等。示例不是白名单。可按完整中英文物品名、TileID 内部名或图格ID查找，也可查植物/矿物/家具/箱子类别。宠物道具定位的是未拾取的世界物体，不是跟随玩家的移动宠物；随机掉落候选或装饰耗材请遵守结果 note，不保证实际掉落。查箱内库存用 find_item_in_storage，查区域用 locate_biome。未命中不等于从未生成。",
+        Description = "在当前 Terraria / tModLoader 的实时地图中逐格定位世界物体。目录结合本机物品样本、碎石机等工具的放置样式和自然拾取物映射，支持矿物、指定宝箱、家具、制作站、药草、染料植物、装饰、背景墙，以及大自然的恩赐、巨型龙蛋、友好巨石、丛林孢子、生命水晶、生命果、花苞、雕像和石中剑等。示例不是白名单。可按完整中英文物品名、TileID 内部名或图格ID查找，也可查植物/矿物/家具/箱子类别。宠物道具定位的是未拾取的世界物体，不是跟随玩家的移动宠物；随机掉落候选或装饰耗材请遵守结果 note，不保证实际掉落。查箱内库存用 find_item_in_storage，查区域用 locate_biome。未命中不等于从未生成。",
         Parameters = new
         {
             type = "object",
@@ -96,7 +96,7 @@ internal static class WorldLocatorAgentSkills
     {
         Name = FindItemToolName,
         DisplayName = "搜索箱子与个人储物",
-        Description = "在当前原版 Terraria 世界的所有已加载箱子、梳妆台以及玩家个人储物中查找指定物品。用户询问某件物品放在哪里、哪个箱子有某物或找不到物品时调用。请把 item_name 规范为游戏内正式简体中文物品名。命中世界箱子后会自动启动悬浮球方向导航。",
+        Description = "在当前 Terraria / tModLoader 世界的所有已加载箱子、梳妆台以及玩家个人储物中查找指定物品。用户询问某件物品放在哪里、哪个箱子有某物或找不到物品时调用。请把 item_name 规范为游戏内正式简体中文物品名。命中世界箱子后会自动启动悬浮球方向导航。",
         Parameters = new
         {
             type = "object",

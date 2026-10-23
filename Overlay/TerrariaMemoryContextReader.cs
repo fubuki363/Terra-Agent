@@ -18,10 +18,12 @@ internal static class TerrariaMemoryContextReader
 
     public static string Read(IReadOnlyList<string> playerNames, IReadOnlyList<string> worldNames)
     {
-        Process? game = Process.GetProcessesByName("Terraria")
-            .FirstOrDefault(process => !process.HasExited);
+        GameProcessInfo? info = GameProcessLocator.Find();
+        using Process? game = GameProcessLocator.OpenClient(info);
         if (game is null)
-            return "实时进程：原版 Terraria 当前未运行；未读取进程内存。";
+            return "实时进程：Terraria / tModLoader 当前未运行；未读取进程内存。";
+        if (info?.IsTmod == true)
+            return "实时进程：tModLoader 正在运行；实时状态通过内置的 64 位托管读取器按需获取，不使用原版存档或字节扫描猜测状态。";
 
         StringBuilder result = new();
         string version = "未知";

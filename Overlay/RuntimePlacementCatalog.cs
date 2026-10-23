@@ -35,13 +35,14 @@ internal sealed class RuntimePlacementCatalog
     private static RuntimePlacementCatalog? _cached;
     private static string _cacheStamp = "";
     private readonly List<PlacedObjectSpec> _entries;
+    private static ClrType RequireMainLang(ClrModule module) => module.GetTypeByName("Terraria.Lang") ?? throw new InvalidDataException("语言目录不可用。");
     public int Count => _entries.Count;
     internal RuntimePlacementCatalog(IEnumerable<PlacedObjectSpec> entries) => _entries = entries.ToList();
 
     public static RuntimePlacementCatalog Load(ClrModule module, ClrAppDomain domain, ClrType main, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        string stamp = module.Name + (File.Exists(module.Name) ? File.GetLastWriteTimeUtc(module.Name!).Ticks.ToString() : "");
+        string stamp = GameProcessLocator.Find()?.Id + ":" + StaticObject(RequireMainLang(module), "_itemNameCache", domain).Address + ":" + module.Name + (File.Exists(module.Name) ? File.GetLastWriteTimeUtc(module.Name!).Ticks.ToString() : "");
         if (_cached is not null && _cacheStamp == stamp) return _cached;
         ClrType? samples = module.GetTypeByName("Terraria.ID.ContentSamples") ?? module.GetTypeByName("Terraria.GameContent.ContentSamples");
         if (samples is null) throw new InvalidDataException("此游戏版本的物体样本目录不可用。");
@@ -61,7 +62,7 @@ internal sealed class RuntimePlacementCatalog
         Dictionary<int, string> english = new();
         Dictionary<string, int> itemIds = new(StringComparer.Ordinal);
         Dictionary<string, ushort> naturalTypes = new(StringComparer.Ordinal);
-        string? gamePath = TerrariaItemNameCatalog.FindTerrariaExecutable();
+        string? gamePath = File.Exists(module.Name) ? module.Name : TerrariaItemNameCatalog.FindTerrariaExecutable();
         if (gamePath is not null)
         {
             using AssemblyDefinition assembly = AssemblyDefinition.ReadAssembly(gamePath);
@@ -75,6 +76,7 @@ internal sealed class RuntimePlacementCatalog
             foreach (FieldDefinition field in assembly.MainModule.GetType("Terraria.ID.TileID")!.Fields)
                 if (field.HasConstant && field.Constant is not null && field.Name != "Count") naturalTypes[field.Name] = Convert.ToUInt16(field.Constant);
         }
+        Dictionary<int, string>? runtimeNames = GameProcessLocator.Find()?.IsTmod == true ? RuntimeItemCatalog.Load(module, domain) : null;
         List<PlacedObjectSpec> catalog = new();
         HashSet<ushort> plantTypes = naturalTypes.Where(pair => NaturalObjectCatalog.IsPlantTile(pair.Key)).Select(pair => pair.Value).ToHashSet();
         for (int index = 0; index < entries.Length; index++)
@@ -86,7 +88,7 @@ internal sealed class RuntimePlacementCatalog
             try { id = entry.ReadField<int>("key"); item = entry.ReadObjectField("value"); }
             catch { continue; }
             if (id <= 0 || !item.IsValid) continue;
-            string name = TerrariaItemNameCatalog.Resolve(id) ?? english.GetValueOrDefault(id, "物品 " + id);
+            string name = runtimeNames is not null ? runtimeNames.GetValueOrDefault(id, "物品 " + id) : TerrariaItemNameCatalog.Resolve(id) ?? english.GetValueOrDefault(id, "物品 " + id);
             int tile = Read(item, "createTile", -1), wall = Read(item, "createWall", -1), style = Read(item, "placeStyle", 0);
             if (wall > 0 && wall < ushort.MaxValue)
                 catalog.Add(new(name, english.GetValueOrDefault(id, ""), (ushort)wall, 0, true, false, 1, 1, 18, new[] { 0 }, 18, 18, true, 1, 1, 1));
@@ -96,7 +98,7 @@ internal sealed class RuntimePlacementCatalog
 
         PlacedObjectSpec CreateSpec(int id, ushort tile, int style)
         {
-            string name = TerrariaItemNameCatalog.Resolve(id) ?? english.GetValueOrDefault(id, "物品 " + id);
+            string name = runtimeNames is not null ? runtimeNames.GetValueOrDefault(id, "物品 " + id) : TerrariaItemNameCatalog.Resolve(id) ?? english.GetValueOrDefault(id, "物品 " + id);
             bool framed = tile < important.Length && important[tile];
             ClrObject shape = dataArray.IsValid && dataArray.IsArray && tile < dataArray.AsArray().Length
                 ? dataArray.AsArray().GetObjectValue(tile) : default;

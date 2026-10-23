@@ -106,7 +106,8 @@ internal sealed class HarnessFeaturesController : IDisposable
     private void SendSettings()
     {
         _view.Post(new { type = "settingsData", settings = _assistant.Settings,
-            keyStatus = _assistant.KeyStatus, usage = _assistant.UsageSummary, hasKey = _assistant.HasKey(out _) });
+            keyStatus = _assistant.KeyStatus, usage = _assistant.UsageSummary, hasKey = _assistant.HasKey(out _),
+            gameStatus = GameProcessLocator.Find(refresh: true)?.DisplayName ?? "未检测到游戏客户端" });
         SettingsChanged?.Invoke();
     }
 

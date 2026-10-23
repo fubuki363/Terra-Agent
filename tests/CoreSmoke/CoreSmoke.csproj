@@ -14,6 +14,12 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="..\..\Overlay\GameProcessLocator.cs" Link="Overlay\GameProcessLocator.cs" />
+    <Compile Include="..\..\Overlay\GameReaderProtocol.cs" Link="Overlay\GameReaderProtocol.cs" />
+    <Compile Include="..\..\Overlay\TmodReaderClient.cs" Link="Overlay\TmodReaderClient.cs" />
+    <Compile Include="..\..\Overlay\TmodWorldMap.cs" Link="Overlay\TmodWorldMap.cs" />
+    <Compile Include="..\..\Overlay\RuntimeItemCatalog.cs" Link="Overlay\RuntimeItemCatalog.cs" />
+
     <Compile Include="StreamingChecks.cs" />
     <Compile Include="..\..\Services\Models.cs" Link="Services\Models.cs" />
     <Compile Include="..\..\Services\ClientIdentity.cs" Link="Services\ClientIdentity.cs" />

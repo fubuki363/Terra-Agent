@@ -296,10 +296,13 @@
     );
     panels.get("usage").append(usage);
     const live = card("游戏数据读取");
+    const runtimeStatus = node("p", "feature-status", model.gameStatus || "正在识别游戏…");
+    runtimeStatus.id = "game-runtime-status";
+    live.append(runtimeStatus, button("刷新识别", () => send("settingsRefresh")));
     live.append(
       row(
         "启用实时读取",
-        "只读访问，由 Agent 按问题决定是否调用。",
+        "自动识别 Terraria / tModLoader，无需安装配套 Mod；由 Agent 按问题决定是否只读访问。",
         settingSwitch("includeMemoryContext"),
       ),
     );
@@ -880,6 +883,8 @@
         return true;
       case "settingsData":
         model.settings = message.settings;
+        model.gameStatus = message.gameStatus;
+        if ($("game-runtime-status")) $("game-runtime-status").textContent = model.gameStatus || "未检测到游戏客户端";
         model.keyStatus = message.keyStatus;
         model.usage = message.usage;
         fillSettings();

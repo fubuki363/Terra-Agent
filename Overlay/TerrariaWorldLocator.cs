@@ -85,18 +85,16 @@ internal static partial class TerrariaWorldLocator
     {
         result = null;
         failure = "";
-        IReadOnlyList<KeyValuePair<int, string>> candidates = TerrariaItemNameCatalog.FindByName(query, 24);
-        if (candidates.Count == 0)
-        {
-            failure = "无法把“" + Safe(query) + "”匹配到当前 Terraria 的物品名称，请使用更完整的中文物品名。";
-            return false;
-        }
-
-        HashSet<int> candidateIds = candidates.Select(candidate => candidate.Key).ToHashSet();
+        token.ThrowIfCancellationRequested();
+        if (TmodReaderClient.NeedsWorker)
+            return TmodReaderClient.TryRead("storage", out result, out failure, query, maximumResults, includePersonalStorage, token: token);
+        Dictionary<int, string>? runtimeNames = null;
+        HashSet<int> candidateIds = new();
+        IReadOnlyList<KeyValuePair<int, string>> candidates = Array.Empty<KeyValuePair<int, string>>();
         Process? process = FindTerrariaProcess();
         if (process is null)
         {
-            failure = "没有检测到正在运行的原版 Terraria。";
+            failure = "没有检测到 Terraria 或 tModLoader 游戏客户端。";
             return false;
         }
 
@@ -109,10 +107,14 @@ internal static partial class TerrariaWorldLocator
             float playerTileY;
             int scannedWorldChests = 0;
             bool multiplayerClient;
-            using (DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: true))
+            using (DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: GameProcessLocator.Find()?.IsTmod != true))
             {
                 using RuntimeContext runtimeContext = OpenRuntime(target);
                 ClrType mainType = RequireType(runtimeContext.Module, "Terraria.Main");
+                runtimeNames = GameProcessLocator.Find()?.IsTmod == true ? RuntimeItemCatalog.Load(runtimeContext.Module, runtimeContext.Domain) : null;
+                candidates = runtimeNames is not null ? RuntimeItemCatalog.Find(runtimeNames, query) : TerrariaItemNameCatalog.FindByName(query, 24);
+                if (candidates.Count == 0) throw new InvalidDataException("未匹配当前游戏的物品名称，请使用游戏内名称或物品 ID。");
+                candidateIds = candidates.Select(p => p.Key).ToHashSet();
                 ClrObject player = ReadLocalPlayer(mainType, runtimeContext.Domain);
                 ReadPlayerTilePosition(player, out playerTileX, out playerTileY);
                 multiplayerClient = ReadStatic(mainType, "netMode", runtimeContext.Domain, 0) == 1;
@@ -158,7 +160,7 @@ internal static partial class TerrariaWorldLocator
                     return new StorageLocationHit(
                         first.StorageKind,
                         first.StorageLabel,
-                        TerrariaItemNameCatalog.Resolve(first.ItemId) ?? "物品ID " + first.ItemId,
+                        runtimeNames is not null ? runtimeNames.GetValueOrDefault(first.ItemId, "物品ID " + first.ItemId) : TerrariaItemNameCatalog.Resolve(first.ItemId) ?? "物品ID " + first.ItemId,
                         first.ItemId,
                         group.Sum(value => value.Stack),
                         string.Join("、", group.Select(value => "槽" + value.Slot).Distinct()),
@@ -214,6 +216,9 @@ internal static partial class TerrariaWorldLocator
     {
         result = null;
         failure = "";
+        token.ThrowIfCancellationRequested();
+        if (TmodReaderClient.NeedsWorker)
+            return TmodReaderClient.TryRead("biome", out result, out failure, query: biome, maximum: maximumResults, token: token);
         if (!TryGetBiomeDefinition(biome, out BiomeDefinition definition))
         {
             failure = "暂不支持或无法可靠定位的群系/结构：“" + Safe(biome) + "”。当前可检测：" + string.Join("、", SupportedBiomeNames);
@@ -239,7 +244,7 @@ internal static partial class TerrariaWorldLocator
         Process? process = FindTerrariaProcess();
         if (process is null)
         {
-            failure = "没有检测到正在运行的原版 Terraria。";
+            failure = "没有检测到 Terraria 或 tModLoader 游戏客户端。";
             return false;
         }
 
@@ -252,21 +257,23 @@ internal static partial class TerrariaWorldLocator
             int sampledCells = 0;
             using (DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: false))
             {
-                if (target.DataReader.PointerSize != 4)
-                    throw new InvalidDataException("当前只支持 32 位原版 Terraria 的世界群系扫描。");
                 using RuntimeContext runtimeContext = OpenRuntime(target);
                 ClrType mainType = RequireType(runtimeContext.Module, "Terraria.Main");
                 ClrObject player = ReadLocalPlayer(mainType, runtimeContext.Domain);
                 ReadPlayerTilePosition(player, out playerTileX, out playerTileY);
-
-                ClrObject tileArrayObject = ReadStaticObject(mainType, "tile", runtimeContext.Domain);
-                if (!tileArrayObject.IsValid || !tileArrayObject.IsArray)
-                    throw new InvalidDataException("Main.tile 不是有效数组。");
-                ClrArray tiles = tileArrayObject.AsArray();
-                if (tiles.Rank != 2)
-                    throw new InvalidDataException("Main.tile 的数组维度不符合预期。");
-                int width = tiles.GetLength(0);
-                int height = tiles.GetLength(1);
+                bool tmod = GameProcessLocator.Find()?.IsTmod == true;
+                TmodWorldMap? map = tmod ? new(target, runtimeContext.Runtime, runtimeContext.Module, runtimeContext.Domain, mainType) : null;
+                ClrArray tiles = default;
+                int width, height;
+                if (map is not null) { width = map.Width; height = map.Height; }
+                else
+                {
+                    if (target.DataReader.PointerSize != 4) throw new InvalidDataException("原版图格读取器需要 32 位运行时。");
+                    ClrObject tileArrayObject = ReadStaticObject(mainType, "tile", runtimeContext.Domain);
+                    if (!tileArrayObject.IsValid || !tileArrayObject.IsArray || tileArrayObject.AsArray().Rank != 2)
+                        throw new InvalidDataException("Main.tile 数组不可用。");
+                    tiles = tileArrayObject.AsArray(); width = tiles.GetLength(0); height = tiles.GetLength(1);
+                }
                 double worldSurface = ReadStatic(mainType, "worldSurface", runtimeContext.Domain, height * 0.3d);
                 double rockLayer = ReadStatic(mainType, "rockLayer", runtimeContext.Domain, height * 0.45d);
                 int spawnX = ReadStatic(mainType, "spawnTileX", runtimeContext.Domain, width / 2);
@@ -284,47 +291,41 @@ internal static partial class TerrariaWorldLocator
                         playerTileX));
                 }
 
-                ClrType tileType = RequireType(runtimeContext.Module, "Terraria.Tile");
-                ClrInstanceField typeField = RequireField(tileType, "type");
-                ClrInstanceField wallField = RequireField(tileType, "wall");
-                ClrInstanceField liquidField = RequireField(tileType, "liquid");
-                ClrInstanceField solidHeaderField = RequireField(tileType, "sTileHeader");
-                ClrInstanceField liquidHeaderField = RequireField(tileType, "bTileHeader");
-
-                ulong tileArrayData = tiles.Type.GetArrayElementAddress(tiles.Address, 0);
+                ClrType? tileType = map is null ? RequireType(runtimeContext.Module, "Terraria.Tile") : null;
+                ClrInstanceField? typeField = tileType?.GetFieldByName("type"), wallField = tileType?.GetFieldByName("wall"),
+                    liquidField = tileType?.GetFieldByName("liquid"), solidHeaderField = tileType?.GetFieldByName("sTileHeader"),
+                    liquidHeaderField = tileType?.GetFieldByName("bTileHeader");
+                ulong tileArrayData = map is null ? tiles.Type.GetArrayElementAddress(tiles.Address, 0) : 0;
                 for (int x = definition.SampleStride; definition.DirectKind.Length == 0 && x < width - definition.SampleStride; x += definition.SampleStride)
                 {
                     token.ThrowIfCancellationRequested();
+                    if (map is not null && !map.ReadColumn(x)) throw new IOException("地图列读取失败，请重试。");
                     for (int y = definition.SampleStride; y < height - definition.SampleStride; y += definition.SampleStride)
                     {
                         if (!MatchesVerticalZone(definition.Zone, y, height, worldSurface, rockLayer))
                             continue;
                         sampledCells++;
-                        long linearIndex = (long)x * height + y;
-                        ulong addressSlot = tileArrayData + (ulong)(linearIndex * target.DataReader.PointerSize);
-                        ulong tileAddress = target.DataReader.ReadPointer(addressSlot);
-                        if (tileAddress == 0)
-                            continue;
-
                         bool match;
-                        if (definition.Shimmer)
-                        {
-                            byte liquid = liquidField.Read<byte>(tileAddress, interior: false);
-                            byte header = liquidHeaderField.Read<byte>(tileAddress, interior: false);
-                            match = liquid > 0 && ((header & 96) >> 5) == 3;
-                        }
+                        if (map is not null)
+                            match = definition.Shimmer ? map.Shimmer(y) : map.Tile(y).Active && definition.TileIds.Contains(map.Type(y)) || definition.WallIds.Contains(map.Wall(y));
                         else
                         {
-                            ushort header = solidHeaderField.Read<ushort>(tileAddress, interior: false);
-                            ushort tileId = typeField.Read<ushort>(tileAddress, interior: false);
-                            ushort wallId = wallField.Read<ushort>(tileAddress, interior: false);
-                            match = ((header & 32) != 0 && definition.TileIds.Contains(tileId))
-                                || definition.WallIds.Contains(wallId);
+                            ulong tileAddress = target.DataReader.ReadPointer(tileArrayData + (ulong)(((long)x * height + y) * 4));
+                            if (tileAddress == 0) continue;
+                            if (definition.Shimmer)
+                            {
+                                byte liquid = liquidField!.Read<byte>(tileAddress, false), header = liquidHeaderField!.Read<byte>(tileAddress, false);
+                                match = liquid > 0 && ((header & 96) >> 5) == 3;
+                            }
+                            else
+                                match = (solidHeaderField!.Read<ushort>(tileAddress, false) & 32) != 0 && definition.TileIds.Contains(typeField!.Read<ushort>(tileAddress, false))
+                                    || definition.WallIds.Contains(wallField!.Read<ushort>(tileAddress, false));
                         }
                         if (match)
                             samples.Add(new BiomeSample(x, y));
                     }
                 }
+                map?.VerifyWorld();
             }
 
             if (samples.Count == 0)
@@ -394,6 +395,12 @@ internal static partial class TerrariaWorldLocator
         tileX = 0;
         tileY = 0;
         failure = "";
+        if (TmodReaderClient.NeedsWorker)
+        {
+            bool success = TmodReaderClient.TryRead("position", out PlayerPosition? position, out failure);
+            if (success && position is not null) { tileX = position.X; tileY = position.Y; }
+            return success;
+        }
         Process? process = FindTerrariaProcess();
         if (process is null)
         {
@@ -443,7 +450,7 @@ internal static partial class TerrariaWorldLocator
                 continue;
             int itemId = ReadInstance(item, "type", ReadInstance(item, "netID", 0));
             int stack = ReadInstance(item, "stack", 0);
-            if (stack <= 0 || stack > 9999 || !candidateIds.Contains(itemId))
+            if (stack <= 0 || stack > ReadInstance(item, "maxStack", 9999) || !candidateIds.Contains(itemId))
                 continue;
             output.Add(new RawStorageHit(storageKind, storageLabel, itemId, stack, slot, tileX, tileY));
         }
@@ -614,7 +621,8 @@ internal static partial class TerrariaWorldLocator
             ?? throw new InvalidDataException("Terraria 进程中没有可读取的 CLR。");
         ClrRuntime runtime = clrInfo.CreateRuntime();
         ClrModule module = runtime.EnumerateModules().FirstOrDefault(candidate =>
-            candidate.Name?.EndsWith("Terraria.exe", StringComparison.OrdinalIgnoreCase) == true)
+            candidate.Name?.EndsWith("Terraria.exe", StringComparison.OrdinalIgnoreCase) == true
+            || candidate.Name?.EndsWith("tModLoader.dll", StringComparison.OrdinalIgnoreCase) == true)
             ?? throw new InvalidDataException("无法定位 Terraria 托管模块。");
         ClrAppDomain domain = runtime.AppDomains.FirstOrDefault()
             ?? throw new InvalidDataException("无法定位 Terraria 应用域。");
@@ -649,16 +657,8 @@ internal static partial class TerrariaWorldLocator
 
     private static Process? FindTerrariaProcess()
     {
-        Process[] processes = Process.GetProcessesByName("Terraria");
-        Process? selected = processes.Where(process => !process.HasExited)
-            .OrderByDescending(process => process.StartTime)
-            .FirstOrDefault();
-        foreach (Process process in processes)
-        {
-            if (!ReferenceEquals(process, selected))
-                process.Dispose();
-        }
-        return selected;
+        GameProcessInfo? game = GameProcessLocator.Find();
+        return GameProcessLocator.OpenClient(game);
     }
 
     private static ClrType RequireType(ClrModule module, string name) => module.GetTypeByName(name)

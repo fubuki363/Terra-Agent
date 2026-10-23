@@ -23,11 +23,13 @@ internal static partial class TerrariaWorldLocator
         result = null;
         failure = "";
         token.ThrowIfCancellationRequested();
+        if (TmodReaderClient.NeedsWorker)
+            return TmodReaderClient.TryRead("objects", out result, out failure, query, maximumResults, token: token);
         bool known = WorldObjectCatalog.TryResolve(query, out WorldObjectDefinition definition);
         using Process? process = FindTerrariaProcess();
         if (process is null)
         {
-            failure = "没有检测到正在运行的原版 Terraria。";
+            failure = "没有检测到 Terraria 或 tModLoader 游戏客户端。";
             return false;
         }
         try
@@ -35,6 +37,8 @@ internal static partial class TerrariaWorldLocator
             using IDisposable lease = TerrariaReadCoordinator.Enter(token);
             // Tiles are read in bounded pages. No world scan suspends gameplay.
             using DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: false);
+            if (GameProcessLocator.Find()?.IsTmod == true)
+                return TryFindTmodObjects(target, query, maximumResults, out result, out failure, token);
             if (target.DataReader.PointerSize != 4)
                 throw new InvalidDataException("当前地图读取器支持 32 位原版 Terraria。");
             using RuntimeContext runtime = OpenRuntime(target);

@@ -22,7 +22,7 @@ internal static class GameMemoryAgentSkill
         {
             Name = ToolName,
             DisplayName = "读取 Terraria 实时状态",
-            Description = "按需只读获取当前正在运行的原版 Terraria 状态。仅当回答依赖玩家当前状态时调用，并且只请求必要类别；一般游戏知识、配方或纯攻略问题不要调用。",
+            Description = "按需只读获取当前正在运行的 Terraria 或 tModLoader 状态。仅当回答依赖玩家当前状态时调用，并且只请求必要类别；一般游戏知识、配方或纯攻略问题不要调用。",
             Parameters = new
             {
                 type = "object",

@@ -9,10 +9,10 @@ internal static class TerrariaWindowCapture
 {
     public static string CaptureAsDataUrl()
     {
-        Process? game = Process.GetProcessesByName("Terraria")
-            .FirstOrDefault(process => !process.HasExited && process.MainWindowHandle != IntPtr.Zero);
+        GameProcessInfo? info = GameProcessLocator.Find(refresh: true);
+        using Process? game = GameProcessLocator.OpenClient(info);
         if (game is null)
-            throw new InvalidOperationException("没有检测到正在运行的原版 Terraria 窗口。请先进入游戏，且不要将窗口最小化。");
+            throw new InvalidOperationException("没有检测到正在运行的Terraria 或 tModLoader 窗口。请先进入游戏，且不要将窗口最小化。");
 
         IntPtr window = game.MainWindowHandle;
         if (NativeMethods.DwmGetWindowAttribute(

@@ -15,6 +15,8 @@ internal static class Program
         try
         {
             if (args.Contains("--browser-live")) { BrowserSmoke.Run(directory); return; }
+            TmodCompatibilityChecks.Offline();
+            if (args.Contains("--tmod-live")) { TmodCompatibilityChecks.Live(); return; }
             FloatingBallChecks.Run(args);
             if (args.Contains("--ball-only")) return;
             Assembly assembly = Assembly.Load("TerraWikiOverlay");

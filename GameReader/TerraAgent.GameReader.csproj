@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><RuntimeIdentifier>win-x64</RuntimeIdentifier><PlatformTarget>x64</PlatformTarget><SelfContained>false</SelfContained><UseAppHost>false</UseAppHost></PropertyGroup>
+  <ItemGroup><PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801"/><PackageReference Include="Mono.Cecil" Version="0.11.6"/></ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Overlay\GameContextSelection.cs" Link="Shared\GameContextSelection.cs" />
+    <Compile Include="..\Overlay\TerrariaManagedMemoryContextReader.cs" Link="Shared\TerrariaManagedMemoryContextReader.cs" />
+    <Compile Include="..\Overlay\TerrariaItemNameCatalog.cs" Link="Shared\TerrariaItemNameCatalog.cs" />
+    <Compile Include="..\Overlay\TerrariaPrefixCatalog.cs" Link="Shared\TerrariaPrefixCatalog.cs" />
+    <Compile Include="..\Overlay\NavigationState.cs" Link="Shared\NavigationState.cs" />
+    <Compile Include="..\Overlay\TerrariaWorldLocator.cs" Link="Shared\TerrariaWorldLocator.cs" />
+    <Compile Include="..\Overlay\TerrariaWorldObjectLocator.cs" Link="Shared\TerrariaWorldObjectLocator.cs" />
+    <Compile Include="..\Overlay\WorldObjectCatalog.cs" Link="Shared\WorldObjectCatalog.cs" />
+    <Compile Include="..\Overlay\RuntimePlacementCatalog.cs" Link="Shared\RuntimePlacementCatalog.cs" />
+    <Compile Include="..\Overlay\NaturalObjectCatalog.cs" Link="Shared\NaturalObjectCatalog.cs" />
+    <Compile Include="..\Overlay\TerrariaReadCoordinator.cs" Link="Shared\TerrariaReadCoordinator.cs" />
+    <Compile Include="..\Overlay\NativeMethods.cs" Link="Shared\NativeMethods.cs" />
+    <Compile Include="..\Overlay\GameProcessLocator.cs" Link="Shared\GameProcessLocator.cs" />
+    <Compile Include="..\Overlay\GameReaderProtocol.cs" Link="Shared\GameReaderProtocol.cs" />
+    <Compile Include="..\Overlay\TmodReaderClient.cs" Link="Shared\TmodReaderClient.cs" />
+    <Compile Include="..\Overlay\TmodWorldMap.cs" Link="Shared\TmodWorldMap.cs" />
+    <Compile Include="..\Overlay\RuntimeItemCatalog.cs" Link="Shared\RuntimeItemCatalog.cs" />
+  </ItemGroup>
+</Project>

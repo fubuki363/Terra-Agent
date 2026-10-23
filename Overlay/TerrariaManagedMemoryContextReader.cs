@@ -14,20 +14,23 @@ internal static class TerrariaManagedMemoryContextReader
     {
         context = "";
         failure = "";
-        Process? process = Process.GetProcessesByName("Terraria")
-            .Where(candidate => !candidate.HasExited)
-            .OrderByDescending(candidate => candidate.StartTime)
-            .FirstOrDefault();
+        if (TmodReaderClient.NeedsWorker)
+        {
+            bool success = TmodReaderClient.TryRead("state", out string? remote, out failure, selection: selection);
+            context = remote ?? ""; return success;
+        }
+        GameProcessInfo? game = GameProcessLocator.Find();
+        using Process? process = GameProcessLocator.OpenClient(game);
         if (process is null)
         {
-            failure = "没有检测到正在运行的原版 Terraria。";
+            failure = "没有检测到 Terraria 或 tModLoader 游戏客户端。";
             return false;
         }
 
         try
         {
             using IDisposable lease = TerrariaReadCoordinator.Enter();
-            using DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: true);
+            using DataTarget target = DataTarget.AttachToProcess(process.Id, suspend: game?.IsTmod != true);
             ClrInfo? clrInfo = target.ClrVersions.FirstOrDefault();
             if (clrInfo is null)
             {
@@ -37,7 +40,7 @@ internal static class TerrariaManagedMemoryContextReader
 
             using ClrRuntime runtime = clrInfo.CreateRuntime();
             ClrModule? module = runtime.EnumerateModules().FirstOrDefault(candidate =>
-                candidate.Name?.EndsWith("Terraria.exe", StringComparison.OrdinalIgnoreCase) == true);
+                candidate.Name?.EndsWith(game?.IsTmod == true ? "tModLoader.dll" : "Terraria.exe", StringComparison.OrdinalIgnoreCase) == true);
             ClrAppDomain? domain = runtime.AppDomains.FirstOrDefault();
             if (module is null || domain is null)
             {
@@ -67,8 +70,10 @@ internal static class TerrariaManagedMemoryContextReader
             ClrType worldGenType = RequireType(module, "Terraria.WorldGen");
             ClrType langType = RequireType(module, "Terraria.Lang");
             ClrObject itemNameCache = ReadStaticObject(langType, "_itemNameCache", domain);
+            ClrObject prefixCache = ReadStaticObject(langType, "prefix", domain);
+            bool tmod = game?.IsTmod == true;
             StringBuilder builder = new();
-            builder.AppendLine("数据来源：正在运行的原版 Terraria 托管内存，只读即时快照；未注入、未修改游戏进程，也未发送原始内存。");
+            builder.AppendLine($"数据来源：正在运行的{game?.DisplayName ?? "Terraria"} 托管内存，只读即时快照；未注入、未修改游戏进程，也未发送原始内存。");
             builder.AppendLine("解释规则：当前值和上限是两个独立字段。生命 120/400 表示当前 120、上限 400；当前值不等于上限，除非两个数字确实相同。");
 
             if (selection.Vitals)
@@ -77,7 +82,7 @@ internal static class TerrariaManagedMemoryContextReader
                 int lifeMax = ReadInstance(player, "statLifeMax2", ReadInstance(player, "statLifeMax", 0));
                 int mana = ReadInstance(player, "statMana", 0);
                 int manaMax = ReadInstance(player, "statManaMax2", ReadInstance(player, "statManaMax", 0));
-                int defense = ReadInstance(player, "statDefense", 0);
+                int defense = ReadDefense(player);
                 string playerName = ReadString(player, "name", "未知角色");
                 builder.AppendLine($"[角色] 活动角色={playerName}");
                 if (selection.Health)
@@ -90,20 +95,49 @@ internal static class TerrariaManagedMemoryContextReader
             if (selection.Inventory)
             {
                 int selectedItem = ReadSelectedItem(player);
-                builder.AppendLine("[背包] 当前选中槽=" + (selectedItem >= 0 ? selectedItem.ToString() : "未知") + "；物品：" + FormatItemArray(inventory, itemNameCache, 58, false));
+                builder.AppendLine("[背包] 当前选中槽=" + (selectedItem >= 0 ? selectedItem.ToString() : "未知") + "；物品：" + FormatItemArray(inventory, itemNameCache, 58, false, prefixCache, tmod));
             }
 
             if (selection.Equipment)
             {
                 ClrObject armor = player.ReadObjectField("armor");
                 ClrObject misc = player.ReadObjectField("miscEquips");
-                builder.AppendLine("[装备] 当前生效的护甲/饰品：" + FormatItemArray(armor, itemNameCache, 10, true));
-                builder.AppendLine("[杂项装备] 宠物/照明宠物/矿车/坐骑/钩爪（不是护甲或战斗饰品）：" + FormatItemArray(misc, itemNameCache, 5, false));
+                builder.AppendLine("[装备] 当前生效的护甲/饰品：" + FormatItemArray(armor, itemNameCache, 10, true, prefixCache, tmod));
+                builder.AppendLine("[杂项装备] 宠物/照明宠物/矿车/坐骑/钩爪（不是护甲或战斗饰品）：" + FormatItemArray(misc, itemNameCache, 5, false, prefixCache, tmod));
+                if (tmod)
+                {
+                    ClrObject extraPlayers = TryReadObject(player, "modPlayers");
+                    if (extraPlayers.IsValid && extraPlayers.IsArray)
+                    for (int index = 0; index < Math.Min(extraPlayers.AsArray().Length, 500); index++)
+                    {
+                        ClrObject extension = extraPlayers.AsArray().GetObjectValue(index);
+                        if (extension.Type?.Name != "Terraria.ModLoader.Default.ModAccessorySlotPlayer") continue;
+                        ClrObject slots = TryReadObject(extension, "exAccessorySlot");
+                        if (slots.IsValid && slots.IsArray)
+                            builder.AppendLine("[模组额外饰品槽] " + FormatItemArray(slots, itemNameCache, slots.AsArray().Length / 2, false, prefixCache, true)
+                                + "（列出槽位物品，是否生效由对应模组决定。）");
+                    }
+                }
             }
 
             bool hardMode = ReadStatic(mainType, "hardMode", domain, false);
             if (selection.WorldInfo)
             {
+                if (tmod)
+                {
+                    ClrType? loader = module.GetTypeByName("Terraria.ModLoader.ModLoader");
+                    ClrObject mods = loader is null ? default : ReadStaticObject(loader, "<Mods>k__BackingField", domain);
+                    if (mods.IsValid && mods.IsArray)
+                    {
+                        List<string> labels = new();
+                        for (int i = 0; i < Math.Min(mods.AsArray().Length, 100); i++)
+                        {
+                            ClrObject mod = mods.AsArray().GetObjectValue(i);
+                            labels.Add(ReadString(mod, "<DisplayName>k__BackingField", mod.Type?.Name ?? "未知模组"));
+                        }
+                        builder.AppendLine("[已加载模组] " + string.Join("、", labels));
+                    }
+                }
                 string worldName = ReadStaticString(mainType, "worldName", domain, "未知世界");
                 bool crimson = ReadStatic(worldGenType, "crimson", domain, false);
                 ClrObject activeWorldFile = ReadStaticObject(mainType, "ActiveWorldFileData", domain);
@@ -128,6 +162,7 @@ internal static class TerrariaManagedMemoryContextReader
 
             if (selection.Progress)
             {
+                if (game?.IsTmod == true) builder.AppendLine("[模组进度] 以下为原版 Boss 标记；各模组自定义 Boss 的完成进度未统一提供，不能据此判断其是否击败。");
                 List<string> downed = new();
                 AddFlag(downed, npcType, "downedSlimeKing", domain, "史莱姆王");
                 AddFlag(downed, npcType, "downedBoss1", domain, "克苏鲁之眼");
@@ -166,7 +201,8 @@ internal static class TerrariaManagedMemoryContextReader
         }
     }
 
-    private static string FormatItemArray(ClrObject arrayObject, ClrObject itemNameCache, int maximum, bool validateEquipment)
+    private static string FormatItemArray(ClrObject arrayObject, ClrObject itemNameCache, int maximum, bool validateEquipment,
+        ClrObject prefixCache = default, bool tmod = false)
     {
         if (!arrayObject.IsValid || !arrayObject.IsArray)
             return "读取不可用";
@@ -180,17 +216,21 @@ internal static class TerrariaManagedMemoryContextReader
             int type = ReadInstance(item, "type", ReadInstance(item, "netID", 0));
             int stack = ReadInstance(item, "stack", 0);
             if (type <= 0 || stack <= 0) continue;
-            if (stack > 9999 || validateEquipment && !IsValidEquipmentSlot(item, slot))
+            if (stack > ReadInstance(item, "maxStack", 9999) || validateEquipment && !IsValidEquipmentSlot(item, slot))
             {
                 rejected++;
                 continue;
             }
-            byte prefix = ReadInstance(item, "prefix", (byte)0);
+            int prefix = item.Type?.GetFieldByName("prefix")?.ElementType == ClrElementType.Int32
+                ? ReadInstance(item, "prefix", 0) : ReadInstance(item, "prefix", (byte)0);
             string name = ResolveItemName(itemNameCache, type);
-            if (name == "未知物品")
+            if (name == "未知物品" && !tmod)
                 name = TerrariaItemNameCatalog.Resolve(type) ?? name;
             string slotName = validateEquipment ? EquipmentSlotName(slot) : $"槽{slot}";
-            items.Add($"{slotName}:{name}[ID {type}]×{stack}" + TerrariaPrefixCatalog.Format(prefix, validateEquipment && slot >= 3));
+            string prefixText = prefix == 0 ? "" : tmod && prefix > 84
+                ? $" {ResolveItemName(prefixCache, prefix).Replace("未知物品", "模组前缀")}[前缀ID {prefix}]"
+                : prefix <= byte.MaxValue ? TerrariaPrefixCatalog.Format((byte)prefix, validateEquipment && slot >= 3) : $" 前缀ID {prefix}";
+            items.Add($"{slotName}:{name}[ID {type}]×{stack}" + prefixText);
         }
         string result = items.Count == 0 ? "空/未装备" : string.Join("；", items);
         return rejected == 0 ? result : result + $"（已忽略 {rejected} 个字段不符合槽位或数量规则的异常项）";
@@ -203,6 +243,18 @@ internal static class TerrariaManagedMemoryContextReader
         if (slot == 2 && TryReadInstance(item, "legSlot", out int legSlot)) return legSlot >= 0;
         if (slot >= 3 && TryReadInstance(item, "accessory", out bool accessory)) return accessory;
         return true;
+    }
+
+    private static int ReadDefense(ClrObject player)
+    {
+        ClrInstanceField? field = player.Type?.GetFieldByName("statDefense");
+        if (field?.ElementType == ClrElementType.Int32) return ReadInstance(player, "statDefense", 0);
+        if (field is null) throw new InvalidDataException("防御字段不可用。");
+        ClrValueType value = field.ReadStruct(player.Address, false);
+        int positive = value.ReadField<int>("<Positive>k__BackingField"), negative = value.ReadField<int>("<Negative>k__BackingField");
+        float additive = value.ReadValueTypeField("AdditiveBonus").ReadField<float>("<Value>k__BackingField");
+        float multiplier = value.ReadValueTypeField("FinalMultiplier").ReadField<float>("<Value>k__BackingField");
+        return Math.Max(0, (int)Math.Round((positive * (1 + additive) - negative) * multiplier));
     }
 
     private static string EquipmentSlotName(int slot) => slot switch
@@ -218,6 +270,7 @@ internal static class TerrariaManagedMemoryContextReader
     {
         try
         {
+            if (player.Type?.GetFieldByName("selectedItem") is not null) return player.ReadField<int>("selectedItem");
             ClrInstanceField? field = player.Type?.GetFieldByName("selectedItemState");
             if (field is null) return -1;
             ClrValueType state = field.ReadStruct(player.Address, interior: false);

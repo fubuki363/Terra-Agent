@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>TerraWikiOverlay</AssemblyName>
     <RootNamespace>TerraWikiOverlay</RootNamespace>
-    <Version>1.4.2</Version>
+    <Version>1.5.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <PublishSingleFile>true</PublishSingleFile>
@@ -38,4 +38,15 @@
     <Compile Include="..\Services\ConversationStore.cs" Link="Shared\ConversationStore.cs" />
     <Compile Include="..\Services\UsageTracker.cs" Link="Shared\UsageTracker.cs" />
   </ItemGroup>
+  <Target Name="PackageGameReader" BeforeTargets="AssignTargetPaths">
+    <PropertyGroup>
+      <GameReaderPublish>$(MSBuildThisFileDirectory)obj\game-reader\publish\</GameReaderPublish>
+      <GameReaderZip>$(MSBuildThisFileDirectory)obj\game-reader\payload.zip</GameReaderZip>
+    </PropertyGroup>
+    <MSBuild Projects="..\GameReader\TerraAgent.GameReader.csproj" Targets="Restore;Publish"
+      RemoveProperties="OutputPath;OutDir;BaseIntermediateOutputPath;IntermediateOutputPath"
+      Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;PlatformTarget=x64;SelfContained=false;PublishSingleFile=false;UseAppHost=false;PublishDir=$(GameReaderPublish)" />
+    <ZipDirectory SourceDirectory="$(GameReaderPublish)" DestinationFile="$(GameReaderZip)" Overwrite="true" />
+    <ItemGroup><EmbeddedResource Include="$(GameReaderZip)" LogicalName="TerraAgent.GameReader.zip" /></ItemGroup>
+  </Target>
 </Project>
